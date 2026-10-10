@@ -16,6 +16,7 @@ mod python;
 mod rust;
 #[cfg(feature = "lang-typescript")]
 mod typescript;
+mod walk;
 
 pub use adapter::{LanguageAdapter, adapter_for, builtin_adapters, parse};
 #[cfg(feature = "lang-go")]
@@ -26,6 +27,9 @@ pub use python::PythonAdapter;
 pub use rust::RustAdapter;
 #[cfg(feature = "lang-typescript")]
 pub use typescript::TypeScriptAdapter;
+pub use walk::{
+    FileEntry, IndexedFile, ParsedFile, Skipped, Walk, YUSRA_IGNORE_FILE, index_file, walk,
+};
 
 use yusra_core::Hash32;
 
