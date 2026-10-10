@@ -193,5 +193,8 @@ fn module_name(node: Node, src: &[u8]) -> String {
 
 fn field_children<'t>(node: Node<'t>, field: &str) -> Vec<Node<'t>> {
     let mut cursor = node.walk();
-    node.children_by_field_name(field, &mut cursor).collect()
+    // Field berulang bisa ikut memuat token `,` di antaranya.
+    node.children_by_field_name(field, &mut cursor)
+        .filter(|n| n.is_named())
+        .collect()
 }

@@ -1,0 +1,67 @@
+---
+source: crates/yusra-index/tests/go_adapter.rs
+expression: "render_all(&a, \"pkg/sample.go\", SAMPLE)"
+---
+# simbol
+const MaxRetry L15-16 | const MaxRetry
+const StateActive L19-20 | const StateActive
+const StateClosed L21-21 | const StateClosed
+const first L22-22 | const first, second
+const second L22-22 | const first, second
+struct Session L29-33 | type Session struct
+interface Store L36-39 | type Store interface
+struct Cache L41-43 | type Cache[T any] struct
+function MakeToken L46-49 | func MakeToken(id int) string
+method Session::Refresh L51-55 | func (s *Session) Refresh() bool
+method Session::String L57-59 | func (s Session) String() string
+method Cache::Put L61-63 | func (c *Cache[T]) Put(id int, v T)
+function handler L67-69 | func handler(w nethttp.ResponseWriter, r *nethttp.Request)
+
+# impor
+fmt
+errors
+net/http
+embed
+strings
+
+# tag
+ref New
+def Status L27
+ref Status
+ref int
+def Session L30
+ref Session
+ref int
+ref string
+def Store L37
+ref Store
+ref int
+ref Session
+ref error
+def Cache L41
+ref Cache
+ref any
+ref int
+ref T
+def MakeToken L47
+ref int
+ref string
+ref Sprintf
+ref Session
+def Refresh L52
+ref bool
+ref MakeToken
+ref HasPrefix
+ref Session
+def String L57
+ref string
+ref Sprint
+ref Cache
+ref T
+def Put L61
+ref int
+ref T
+def handler L67
+ref ResponseWriter
+ref Request
+ref Fprintln

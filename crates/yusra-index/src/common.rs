@@ -79,7 +79,11 @@ impl<'a> SymbolSink<'a> {
 
 /// Awal simbol termasuk sibling sebelumnya yang `attachable` (doc comment,
 /// atribut, decorator) selama tidak dipisah baris kosong.
-#[cfg(any(feature = "lang-rust", feature = "lang-typescript"))]
+#[cfg(any(
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-go"
+))]
 pub(crate) fn attached_start(
     node: Node,
     src: &[u8],
@@ -161,7 +165,11 @@ pub(crate) fn tags(query: &Query, path: &RelPath, tree: &Tree, src: &[u8]) -> Ve
 
 /// Pasangan (nama capture, teks) dalam urutan kecocokan. Capture yang namanya
 /// diawali `_` adalah bantuan predikat dan tidak dikembalikan.
-#[cfg(any(feature = "lang-rust", feature = "lang-typescript"))]
+#[cfg(any(
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-go"
+))]
 pub(crate) fn captures<'q>(query: &'q Query, tree: &Tree, src: &[u8]) -> Vec<(&'q str, String)> {
     let names = query.capture_names();
     let mut cursor = QueryCursor::new();

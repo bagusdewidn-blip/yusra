@@ -4,9 +4,12 @@ mod adapter;
 #[cfg(any(
     feature = "lang-rust",
     feature = "lang-typescript",
-    feature = "lang-python"
+    feature = "lang-python",
+    feature = "lang-go"
 ))]
 mod common;
+#[cfg(feature = "lang-go")]
+mod go;
 #[cfg(feature = "lang-python")]
 mod python;
 #[cfg(feature = "lang-rust")]
@@ -15,6 +18,8 @@ mod rust;
 mod typescript;
 
 pub use adapter::{LanguageAdapter, adapter_for, builtin_adapters, parse};
+#[cfg(feature = "lang-go")]
+pub use go::GoAdapter;
 #[cfg(feature = "lang-python")]
 pub use python::PythonAdapter;
 #[cfg(feature = "lang-rust")]

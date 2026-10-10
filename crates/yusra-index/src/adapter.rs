@@ -45,6 +45,8 @@ pub fn builtin_adapters() -> Result<Vec<Box<dyn LanguageAdapter>>, YusraError> {
     }
     #[cfg(feature = "lang-python")]
     adapters.push(Box::new(crate::python::PythonAdapter::new()?));
+    #[cfg(feature = "lang-go")]
+    adapters.push(Box::new(crate::go::GoAdapter::new()?));
     Ok(adapters)
 }
 

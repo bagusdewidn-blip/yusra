@@ -7,8 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-default = ["lang-rust", "lang-typescript", "lang-python"]
+default = ["lang-rust", "lang-typescript", "lang-python", "lang-go"]
 lang-python = ["dep:tree-sitter-python"]
+lang-go = ["dep:tree-sitter-go"]
 lang-rust = ["dep:tree-sitter-rust"]
 # Query tag TypeScript hanya berisi tambahan di atas query JavaScript.
 lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
@@ -20,6 +21,7 @@ tree-sitter-rust = { workspace = true, optional = true }
 tree-sitter-typescript = { workspace = true, optional = true }
 tree-sitter-javascript = { workspace = true, optional = true }
 tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
 blake3.workspace = true
 
 [dev-dependencies]
