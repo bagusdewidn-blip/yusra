@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Hapus trailer atribusi alat AI dari pesan commit sebelum commit dibuat.
+# Pola yang sama dipakai CI (scripts/check-ai-attribution.sh); ubah keduanya bersamaan.
+set -euo pipefail
+
+msg_file="$1"
+pattern='^(co-authored-by:.*(claude|anthropic|openai|chatgpt|codex|copilot|gemini|cursor|codeium|windsurf|devin|aider)|claude-session:|.*generated with .*(claude|copilot|cursor|codex|gemini|aider))'
+
+if grep -Eiq "$pattern" "$msg_file"; then
+    tmp="$(mktemp)"
+    grep -Eiv "$pattern" "$msg_file" > "$tmp" || true
+    # buang baris kosong berlebih di akhir pesan
+    sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" > "$msg_file"
+    rm -f "$tmp"
+    echo "commit-msg: trailer atribusi AI dihapus dari pesan commit." >&2
+fi

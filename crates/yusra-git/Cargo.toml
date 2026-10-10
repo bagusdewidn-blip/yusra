@@ -1,0 +1,13 @@
+[package]
+name = "yusra-git"
+description = "Snapshot, worktree, dan akses objek Git."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+yusra-core.workspace = true
+
+[lints]
+workspace = true

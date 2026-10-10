@@ -1,0 +1,13 @@
+[package]
+name = "yusra-tokens"
+description = "Estimasi token, repo map, dan kompresi konteks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+yusra-core.workspace = true
+
+[lints]
+workspace = true

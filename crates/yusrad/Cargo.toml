@@ -1,0 +1,17 @@
+[package]
+name = "yusrad"
+description = "Daemon dan CLI yusra."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "yusrad"
+path = "src/main.rs"
+
+[dependencies]
+yusra-core.workspace = true
+
+[lints]
+workspace = true

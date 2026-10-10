@@ -1,0 +1,13 @@
+[package]
+name = "yusra-merge"
+description = "Merge per simbol dengan fallback mergiraf dan git merge-file."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+yusra-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+/target/
+**/*.rs.bk
+
+# state lokal yusra dan catatan pengembangan privat
+.yusra/
+.dev/
+
+# editor dan OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# konfigurasi lokal agen AI (tidak ikut repo)
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.gemini/
+.cursor/
+.cursorrules
+.windsurfrules
+.aider*
+.github/copilot-instructions.md
