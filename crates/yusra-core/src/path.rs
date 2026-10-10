@@ -82,6 +82,7 @@ mod tests {
         match RelPath::parse(raw) {
             Ok(p) => panic!("{raw:?} seharusnya ditolak, hasil {p}"),
             Err(YusraError::InvalidPath { reason, .. }) => reason,
+            Err(e) => panic!("{raw:?} ditolak dengan error yang salah: {e}"),
         }
     }
 
