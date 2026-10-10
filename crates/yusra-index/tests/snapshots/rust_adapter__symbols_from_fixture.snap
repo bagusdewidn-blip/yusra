@@ -1,0 +1,26 @@
+---
+source: crates/yusra-index/tests/rust_adapter.rs
+expression: "render_symbols(SAMPLE, &symbols)"
+---
+module helpers L6-6 | mod helpers
+const MAX_RETRY L8-9 | pub const MAX_RETRY: u32
+const GREETING L11-11 | static GREETING: &str
+struct Session L13-18 | pub struct Session
+enum State L20-23 | pub enum State
+impl impl Session L25-37 | impl Session
+method Session::new L26-30 | pub fn new(id: u64) -> Self
+method Session::refresh L33-36 | pub fn refresh(&mut self) -> bool
+impl impl Display for Session L39-43 | impl fmt::Display for Session
+method <Session as Display>::fmt L40-42 | fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+impl impl Debug for State L45-49 | impl fmt::Debug for State
+method <State as Debug>::fmt L46-48 | fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+impl impl From for State L51-58 | impl<T> From<Vec<T>> for State where T: Clone
+method <State as From>::from L55-57 | fn from(_: Vec<T>) -> Self
+trait Repository L60-66 | pub trait Repository
+method Repository::get L61-61 | fn get(&self, key: &str) -> Option<String>
+method Repository::exists L63-65 | fn exists(&self, key: &str) -> bool
+function make_token L70-72 | fn make_token(id: u64) -> String
+module auth L74-88 | pub mod auth
+function auth::login L75-77 | pub fn login() -> bool
+function auth::platform L79-82 | fn platform() -> &'static str
+function auth::platform#2 L84-87 | fn platform() -> &'static str

@@ -11,6 +11,12 @@ publish = false
 [workspace.dependencies]
 yusra-core = { path = "crates/yusra-core" }
 
+# 0.27 butuh Rust 1.90, di atas MSRV
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+blake3 = "1.8"
+insta = "1.49"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

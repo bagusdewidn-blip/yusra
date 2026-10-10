@@ -6,8 +6,18 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = ["lang-rust"]
+lang-rust = ["dep:tree-sitter-rust"]
+
 [dependencies]
 yusra-core.workspace = true
+tree-sitter.workspace = true
+tree-sitter-rust = { workspace = true, optional = true }
+blake3.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [lints]
 workspace = true

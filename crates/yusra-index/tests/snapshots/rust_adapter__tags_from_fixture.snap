@@ -1,0 +1,28 @@
+---
+source: crates/yusra-index/tests/rust_adapter.rs
+expression: out
+---
+def helpers L6
+def Session L15
+def State L20
+ref Session
+def new L27
+ref make_token
+def refresh L33
+ref make_token
+def fmt L40
+ref write
+def fmt L46
+ref write_str
+def from L55
+def Repository L60
+def exists L63
+ref get
+ref is_some
+def make_token L70
+ref format
+def auth L74
+def login L75
+ref is_empty
+def platform L80
+def platform L85

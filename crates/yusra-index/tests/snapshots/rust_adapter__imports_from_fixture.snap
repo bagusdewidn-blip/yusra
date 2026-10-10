@@ -1,0 +1,9 @@
+---
+source: crates/yusra-index/tests/rust_adapter.rs
+expression: "a.imports(&t, SAMPLE.as_bytes())"
+---
+[
+    "std::fmt",
+    "crate::store::{Txn, Value}",
+    "self::helpers",
+]
