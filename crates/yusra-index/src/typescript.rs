@@ -3,7 +3,7 @@ use yusra_core::{RelPath, Symbol, SymbolKind, Tag, YusraError};
 
 use crate::{
     LanguageAdapter,
-    common::{self, SymbolSink, attached_start, signature_between, text},
+    common::{self, SymbolSink, attached_start, named_children, signature_between, text},
 };
 
 /// Spesifikasi modul dari `import`, `export ... from`, `require()`, dan `import()`.
@@ -332,9 +332,4 @@ fn is_jsdoc_or_decorator(kind: &str, body: &[u8]) -> bool {
         "comment" => body.starts_with(b"/**") && !body.starts_with(b"/***") && body != b"/**/",
         _ => false,
     }
-}
-
-fn named_children(node: Node) -> Vec<Node> {
-    let mut cursor = node.walk();
-    node.named_children(&mut cursor).collect()
 }

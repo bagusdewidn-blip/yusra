@@ -1,0 +1,50 @@
+---
+source: crates/yusra-index/tests/python_adapter.rs
+expression: "render_all(&a, \"app/sample.py\", SAMPLE)"
+---
+# simbol
+const MAX_RETRY L10-10 | MAX_RETRY
+const TIMEOUT L11-11 | TIMEOUT: float
+function make_token L17-19 | def make_token(user_id: int) -> str
+class Session L22-47 | class Session(Base)
+class Session::Meta L29-33 | class Meta
+method Session::Meta::describe L32-33 | def describe(self)
+method Session::refresh L35-37 | def refresh(self) -> bool
+method Session::active L39-41 | def active(self) -> bool
+method Session::load L43-47 | async def load(user_id: int) -> Optional["Session"]
+function fetch L50-51 | async def fetch(url)
+
+# impor
+os
+json
+logging.handlers
+typing
+.models
+.helpers
+.utils
+..config
+pickle
+
+# tag
+def MAX_RETRY L10
+def TIMEOUT L11
+def logger L12
+ref getLogger
+def _cache L13
+def make_token L17
+ref dataclass
+def Session L23
+def Meta L29
+def describe L32
+def refresh L35
+ref make_token
+def active L40
+ref bool
+def load L44
+ref loads
+ref get
+def fetch L50
+ref get
+def platform L56
+ref print
+ref dumps

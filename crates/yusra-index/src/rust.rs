@@ -3,7 +3,10 @@ use yusra_core::{RelPath, Symbol, SymbolKind, Tag, YusraError};
 
 use crate::{
     LanguageAdapter,
-    common::{self, SymbolSink, attached_start, collapse_whitespace, signature_between, text},
+    common::{
+        self, SymbolSink, attached_start, collapse_whitespace, named_children, signature_between,
+        text,
+    },
 };
 
 const IMPORTS_QUERY: &str = r"
@@ -92,9 +95,7 @@ struct SymbolWalker<'a> {
 
 impl SymbolWalker<'_> {
     fn items(&mut self, parent: Node, container: Container) {
-        let mut cursor = parent.walk();
-        let children: Vec<Node> = parent.named_children(&mut cursor).collect();
-        for node in children {
+        for node in named_children(parent) {
             match node.kind() {
                 "function_item" | "function_signature_item" => {
                     let kind = match container {

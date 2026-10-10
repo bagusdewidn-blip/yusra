@@ -43,6 +43,8 @@ pub fn builtin_adapters() -> Result<Vec<Box<dyn LanguageAdapter>>, YusraError> {
         adapters.push(Box::new(TypeScriptAdapter::tsx()?));
         adapters.push(Box::new(TypeScriptAdapter::javascript()?));
     }
+    #[cfg(feature = "lang-python")]
+    adapters.push(Box::new(crate::python::PythonAdapter::new()?));
     Ok(adapters)
 }
 

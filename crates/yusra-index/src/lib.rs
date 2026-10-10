@@ -1,14 +1,22 @@
 //! Indexing: traversal, tree-sitter, simbol, graf impor, watcher.
 
 mod adapter;
-#[cfg(any(feature = "lang-rust", feature = "lang-typescript"))]
+#[cfg(any(
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-python"
+))]
 mod common;
+#[cfg(feature = "lang-python")]
+mod python;
 #[cfg(feature = "lang-rust")]
 mod rust;
 #[cfg(feature = "lang-typescript")]
 mod typescript;
 
 pub use adapter::{LanguageAdapter, adapter_for, builtin_adapters, parse};
+#[cfg(feature = "lang-python")]
+pub use python::PythonAdapter;
 #[cfg(feature = "lang-rust")]
 pub use rust::RustAdapter;
 #[cfg(feature = "lang-typescript")]

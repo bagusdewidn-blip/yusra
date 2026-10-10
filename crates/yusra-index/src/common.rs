@@ -79,6 +79,7 @@ impl<'a> SymbolSink<'a> {
 
 /// Awal simbol termasuk sibling sebelumnya yang `attachable` (doc comment,
 /// atribut, decorator) selama tidak dipisah baris kosong.
+#[cfg(any(feature = "lang-rust", feature = "lang-typescript"))]
 pub(crate) fn attached_start(
     node: Node,
     src: &[u8],
@@ -104,12 +105,12 @@ pub(crate) fn attached_start(
 }
 
 /// Teks `src[start..end]` dengan spasi dirapatkan dan sisa sintaks di ujung
-/// (`;`, `=`, `=>`, `,` dari klausa `where`) dibuang.
+/// (`;`, `=`, `=>`, `,` dari klausa `where`, `:` sebelum blok Python) dibuang.
 pub(crate) fn signature_between(src: &[u8], start: usize, end: usize) -> Option<String> {
     let raw = String::from_utf8_lossy(src.get(start..end)?);
     let sig = collapse_whitespace(&raw);
     let sig = sig.strip_suffix("=>").unwrap_or(&sig);
-    let sig = sig.trim_end_matches([';', '=', ',', ' ']);
+    let sig = sig.trim_end_matches([';', '=', ',', ':', ' ']);
     (!sig.is_empty()).then(|| sig.to_owned())
 }
 
@@ -160,6 +161,7 @@ pub(crate) fn tags(query: &Query, path: &RelPath, tree: &Tree, src: &[u8]) -> Ve
 
 /// Pasangan (nama capture, teks) dalam urutan kecocokan. Capture yang namanya
 /// diawali `_` adalah bantuan predikat dan tidak dikembalikan.
+#[cfg(any(feature = "lang-rust", feature = "lang-typescript"))]
 pub(crate) fn captures<'q>(query: &'q Query, tree: &Tree, src: &[u8]) -> Vec<(&'q str, String)> {
     let names = query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -175,6 +177,11 @@ pub(crate) fn captures<'q>(query: &'q Query, tree: &Tree, src: &[u8]) -> Vec<(&'
         }
     }
     out
+}
+
+pub(crate) fn named_children(node: Node) -> Vec<Node> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).collect()
 }
 
 pub(crate) fn text<'a>(node: Node, src: &'a [u8]) -> Cow<'a, str> {
