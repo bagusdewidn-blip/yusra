@@ -1,0 +1,18 @@
+---
+source: crates/yusra-index/tests/typescript_adapter.rs
+expression: "render_all(&a, \"src/sample.js\", SAMPLE_JS)"
+---
+# simbol
+function add L4-7 | function add(a, b)
+class Counter L9-15 | class Counter
+method Counter::increment L12-14 | increment()
+
+# impor
+fs
+./path.js
+
+# tag
+def add L5
+def Counter L9
+def increment L12
+ref add

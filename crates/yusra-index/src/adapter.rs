@@ -36,6 +36,13 @@ pub fn builtin_adapters() -> Result<Vec<Box<dyn LanguageAdapter>>, YusraError> {
     let mut adapters: Vec<Box<dyn LanguageAdapter>> = Vec::new();
     #[cfg(feature = "lang-rust")]
     adapters.push(Box::new(crate::rust::RustAdapter::new()?));
+    #[cfg(feature = "lang-typescript")]
+    {
+        use crate::typescript::TypeScriptAdapter;
+        adapters.push(Box::new(TypeScriptAdapter::typescript()?));
+        adapters.push(Box::new(TypeScriptAdapter::tsx()?));
+        adapters.push(Box::new(TypeScriptAdapter::javascript()?));
+    }
     Ok(adapters)
 }
 

@@ -1,12 +1,18 @@
 //! Indexing: traversal, tree-sitter, simbol, graf impor, watcher.
 
 mod adapter;
+#[cfg(any(feature = "lang-rust", feature = "lang-typescript"))]
+mod common;
 #[cfg(feature = "lang-rust")]
 mod rust;
+#[cfg(feature = "lang-typescript")]
+mod typescript;
 
 pub use adapter::{LanguageAdapter, adapter_for, builtin_adapters, parse};
 #[cfg(feature = "lang-rust")]
 pub use rust::RustAdapter;
+#[cfg(feature = "lang-typescript")]
+pub use typescript::TypeScriptAdapter;
 
 use yusra_core::Hash32;
 

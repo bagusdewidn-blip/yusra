@@ -1,0 +1,65 @@
+---
+source: crates/yusra-index/tests/typescript_adapter.rs
+expression: "render_all(&a, \"src/sample.ts\", SAMPLE_TS)"
+---
+# simbol
+const MAX_RETRY L11-12 | export const MAX_RETRY
+const first L16-16 | first
+const second L16-16 | second
+interface Session L18-24 | export interface Session
+enum State L28-31 | export enum State
+function makeToken L34-36 | export function makeToken(id: number): string
+function parse L38-38 | export function parse(input: string): number
+function parse#2 L39-39 | export function parse(input: number): number
+function parse#3 L40-42 | export function parse(input: string | number): number
+class Client L44-67 | class Client<T> extends Base implements Closeable
+method Client::constructor L49-51 | constructor(private readonly url: string)
+method Client::send L53-57 | async send(body: T): Promise<Response>
+method Client::close L59-62 | close(): void
+method Client::handle L64-66 | handle = (event: Event): void
+class Shape L69-71 | export abstract class Shape
+method Shape::area L70-70 | abstract area(): number
+function double L73-73 | export const double = (x: number): number
+function default L75-77 | export default function (): void
+module auth L79-83 | export namespace auth
+function auth::login L80-82 | export function login(): boolean
+module virtual:config L85-87 | declare module "virtual:config"
+const virtual:config::value L86-86 | export const value: string
+function lazy L89-92 | async function lazy()
+
+# impor
+node:fs/promises
+./config
+path
+./helpers
+./types
+./legacy
+./lazy
+
+# tag
+def Session L21
+def refresh L23
+def makeToken L34
+def parse L38
+def parse L39
+def parse L40
+ref Number
+ref Injectable
+def Client L46
+def send L54
+ref T
+ref fetch
+ref stringify
+ref Log
+def close L60
+ref Event
+ref log
+def Shape L69
+def area L70
+def double L73
+ref Client
+ref Client
+ref close
+def login L80
+ref makeToken
+def lazy L89

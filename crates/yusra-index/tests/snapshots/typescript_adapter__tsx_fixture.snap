@@ -1,0 +1,15 @@
+---
+source: crates/yusra-index/tests/typescript_adapter.rs
+expression: "render_all(&a, \"src/sample.tsx\", SAMPLE_TSX)"
+---
+# simbol
+function Button L3-6 | export function Button({ label }: { label: string })
+function Card L8-10 | export const Card = ({ title }: { title: string })
+
+# impor
+react
+
+# tag
+def Button L4
+ref alert
+def Card L8

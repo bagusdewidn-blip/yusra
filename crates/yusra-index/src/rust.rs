@@ -1,12 +1,10 @@
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
+use tree_sitter::{Language, Node, Query, Tree};
+use yusra_core::{RelPath, Symbol, SymbolKind, Tag, YusraError};
+
+use crate::{
+    LanguageAdapter,
+    common::{self, SymbolSink, attached_start, collapse_whitespace, signature_between, text},
 };
-
-use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator, Tree};
-use yusra_core::{RelPath, Symbol, SymbolKind, SymbolPath, Tag, YusraError};
-
-use crate::{LanguageAdapter, hash_bytes};
 
 const IMPORTS_QUERY: &str = r"
 (use_declaration argument: (_) @import)
@@ -57,74 +55,26 @@ impl LanguageAdapter for RustAdapter {
 
     fn symbols(&self, path: &RelPath, tree: &Tree, src: &[u8]) -> Vec<Symbol> {
         let mut walker = SymbolWalker {
-            path,
             src,
-            scope: Vec::new(),
-            out: Vec::new(),
+            sink: SymbolSink::new(path, src),
         };
         walker.items(tree.root_node(), Container::Module);
-        let mut symbols = walker.out;
-        dedupe_symbol_paths(&mut symbols);
-        symbols
+        walker.sink.finish()
     }
 
     fn imports(&self, tree: &Tree, src: &[u8]) -> Vec<String> {
-        let names = self.imports_query.capture_names();
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.imports_query, tree.root_node(), src);
-        let mut out = Vec::new();
-        while let Some(m) = matches.next() {
-            for c in m.captures {
-                let text = collapse_whitespace(&text(c.node, src));
-                match names.get(c.index as usize).copied() {
-                    Some("import") => out.push(text),
-                    // `mod x;` memuat file anak, jadi dicatat sebagai dependensi.
-                    Some("module") => out.push(format!("self::{text}")),
-                    _ => {}
-                }
-            }
-        }
-        out
+        common::captures(&self.imports_query, tree, src)
+            .into_iter()
+            .map(|(name, text)| match name {
+                // `mod x;` memuat file anak, jadi dicatat sebagai dependensi.
+                "module" => format!("self::{text}"),
+                _ => text,
+            })
+            .collect()
     }
 
     fn tags(&self, path: &RelPath, tree: &Tree, src: &[u8]) -> Vec<Tag> {
-        let names = self.tags_query.capture_names();
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.tags_query, tree.root_node(), src);
-        let mut out = Vec::new();
-        // Method cocok dengan pola `definition.method` dan `definition.function`.
-        let mut seen_defs = HashSet::new();
-        while let Some(m) = matches.next() {
-            let mut name_node = None;
-            let mut role = None;
-            for c in m.captures {
-                match names.get(c.index as usize).copied() {
-                    Some("name") => name_node = Some(c.node),
-                    other => role = other,
-                }
-            }
-            let (Some(node), Some(role)) = (name_node, role) else {
-                continue;
-            };
-            let name = text(node, src).into_owned();
-            if role.starts_with("definition.") {
-                let line = u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX);
-                if seen_defs.insert((name.clone(), line)) {
-                    out.push(Tag::Def {
-                        name,
-                        file: path.clone(),
-                        line,
-                    });
-                }
-            } else if role.starts_with("reference.") {
-                // Rujukan ganda tidak dibuang: jumlahnya dipakai sebagai bobot repo map.
-                out.push(Tag::Ref {
-                    name,
-                    file: path.clone(),
-                });
-            }
-        }
-        out
+        common::tags(&self.tags_query, path, tree, src)
     }
 }
 
@@ -136,10 +86,8 @@ enum Container {
 }
 
 struct SymbolWalker<'a> {
-    path: &'a RelPath,
     src: &'a [u8],
-    scope: Vec<String>,
-    out: Vec<Symbol>,
+    sink: SymbolSink<'a>,
 }
 
 impl SymbolWalker<'_> {
@@ -198,9 +146,9 @@ impl SymbolWalker<'_> {
 
     fn nested(&mut self, node: Node, scope: String, container: Container) {
         if let Some(body) = node.child_by_field_name("body") {
-            self.scope.push(scope);
+            self.sink.enter(scope);
             self.items(body, container);
-            self.scope.pop();
+            self.sink.leave();
         }
     }
 
@@ -212,49 +160,18 @@ impl SymbolWalker<'_> {
     }
 
     fn push(&mut self, node: Node, kind: SymbolKind, name: &str) {
-        let range = attached_start(node, self.src)..node.end_byte();
-        let body = self.src.get(range.clone()).unwrap_or_default();
-        let symbol_path = self
-            .scope
-            .iter()
-            .map(String::as_str)
-            .chain([name])
-            .collect::<Vec<_>>()
-            .join("::");
-        self.out.push(Symbol {
-            path: self.path.clone(),
-            symbol_path: SymbolPath(symbol_path),
-            kind,
-            body_hash: hash_bytes(body),
-            byte_range: range,
-            signature: signature(node, self.src),
-        });
+        let range = attached_start(node, self.src, is_outer_doc_or_attribute)..node.end_byte();
+        // Signature berhenti sebelum isi (`body`) atau nilai (`value`).
+        let sig_end = node
+            .child_by_field_name("body")
+            .or_else(|| node.child_by_field_name("value"))
+            .map_or(node.end_byte(), |n| n.start_byte());
+        let signature = signature_between(self.src, node.start_byte(), sig_end);
+        self.sink.push(range, kind, name, signature);
     }
 }
 
-/// Awal simbol termasuk doc comment luar (`///`, `/** */`) dan atribut yang
-/// menempel tanpa baris kosong. Komentar biasa dan `//!` tidak ikut.
-fn attached_start(node: Node, src: &[u8]) -> usize {
-    let mut start = node.start_byte();
-    let mut prev = node.prev_named_sibling();
-    while let Some(p) = prev {
-        let body = src.get(p.byte_range()).unwrap_or_default();
-        let gap = src.get(p.end_byte()..start).unwrap_or_default();
-        // Node `line_comment` bisa mencakup newline penutupnya sendiri.
-        let newlines =
-            gap.iter().filter(|&&b| b == b'\n').count() + usize::from(body.ends_with(b"\n"));
-        let attached = is_outer_doc_or_attribute(p.kind(), body)
-            && gap.iter().all(u8::is_ascii_whitespace)
-            && newlines <= 1;
-        if !attached {
-            break;
-        }
-        start = p.start_byte();
-        prev = p.prev_named_sibling();
-    }
-    start
-}
-
+/// Doc comment luar (`///`, `/** */`) dan atribut. Komentar biasa dan `//!` tidak.
 fn is_outer_doc_or_attribute(kind: &str, body: &[u8]) -> bool {
     match kind {
         "attribute_item" => true,
@@ -264,20 +181,6 @@ fn is_outer_doc_or_attribute(kind: &str, body: &[u8]) -> bool {
         }
         _ => false,
     }
-}
-
-/// Teks dari awal item sampai sebelum isi (`body`) atau nilai (`value`),
-/// spasi dirapatkan. Contoh: `pub fn refresh(&mut self) -> bool`.
-fn signature(node: Node, src: &[u8]) -> Option<String> {
-    let end = node
-        .child_by_field_name("body")
-        .or_else(|| node.child_by_field_name("value"))
-        .map_or(node.end_byte(), |n| n.start_byte());
-    let raw = String::from_utf8_lossy(src.get(node.start_byte()..end)?);
-    let sig = collapse_whitespace(&raw);
-    // `,` tersisa dari klausa `where` multi-baris.
-    let sig = sig.trim_end_matches([';', '=', ',', ' ']);
-    (!sig.is_empty()).then(|| sig.to_owned())
 }
 
 /// Nama tipe tanpa generic, referensi, atau path modul.
@@ -291,23 +194,4 @@ fn type_name(node: Node, src: &[u8]) -> String {
         Some(n) => type_name(n, src),
         None => collapse_whitespace(&text(node, src)),
     }
-}
-
-fn dedupe_symbol_paths(symbols: &mut [Symbol]) {
-    let mut seen: HashMap<String, u32> = HashMap::new();
-    for s in symbols {
-        let n = seen.entry(s.symbol_path.0.clone()).or_insert(0);
-        *n += 1;
-        if *n > 1 {
-            s.symbol_path.0 = format!("{}#{n}", s.symbol_path.0);
-        }
-    }
-}
-
-fn text<'a>(node: Node, src: &'a [u8]) -> Cow<'a, str> {
-    String::from_utf8_lossy(src.get(node.byte_range()).unwrap_or_default())
-}
-
-fn collapse_whitespace(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
