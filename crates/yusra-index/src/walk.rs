@@ -171,16 +171,26 @@ pub fn index_file(
         return Err(not_found());
     }
     let bytes = fs::read(&full).map_err(|e| io_error(e, path, not_found))?;
-    let hash = hash_bytes(&bytes);
+    index_bytes(path, &bytes, adapters, max_file_bytes)
+}
 
+/// Seperti [`index_file`], untuk isi yang sudah dibaca pemanggil (misalnya
+/// agar isi yang sama juga dipakai untuk teks baris repo map).
+pub fn index_bytes(
+    path: &RelPath,
+    bytes: &[u8],
+    adapters: &[Box<dyn LanguageAdapter>],
+    max_file_bytes: u64,
+) -> Result<IndexedFile, YusraError> {
+    let hash = hash_bytes(bytes);
     let adapter = adapter_for(adapters, path);
     let parsed = match adapter {
         Some(a) if bytes.len() as u64 <= max_file_bytes => {
-            let tree = parse(a, &bytes)?;
+            let tree = parse(a, bytes)?;
             Some(ParsedFile {
-                symbols: a.symbols(path, &tree, &bytes),
-                imports: a.imports(&tree, &bytes),
-                tags: a.tags(path, &tree, &bytes),
+                symbols: a.symbols(path, &tree, bytes),
+                imports: a.imports(&tree, bytes),
+                tags: a.tags(path, &tree, bytes),
                 has_errors: tree.root_node().has_error(),
             })
         }

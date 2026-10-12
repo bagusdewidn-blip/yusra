@@ -31,7 +31,8 @@ pub use rust::RustAdapter;
 #[cfg(feature = "lang-typescript")]
 pub use typescript::TypeScriptAdapter;
 pub use walk::{
-    FileEntry, IndexedFile, ParsedFile, Skipped, Walk, YUSRA_IGNORE_FILE, index_file, walk,
+    FileEntry, IndexedFile, ParsedFile, Skipped, Walk, YUSRA_IGNORE_FILE, index_bytes, index_file,
+    walk,
 };
 pub use watch::{Change, DEBOUNCE, Watcher, watch};
 
