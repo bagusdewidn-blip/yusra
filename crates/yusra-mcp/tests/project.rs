@@ -181,6 +181,29 @@ fn read_file_full_truncated_and_with_deps() {
 }
 
 #[test]
+fn read_file_with_deps_keeps_room_for_deps_when_truncated() {
+    let (dir, project) = setup();
+    let filler: String = (0..200)
+        .map(|i| format!("// baris pengisi nomor {i}\n"))
+        .collect();
+    let big = format!("{AUTH_RS}{filler}");
+    write(dir.path(), "src/auth.rs", &big);
+    ok(project.apply_changes(&[Change::Upsert(ok(RelPath::parse("src/auth.rs")))]));
+
+    let budget = 200;
+    let resp = ok(project.read_file(&ReadFileRequest {
+        with_deps: true,
+        max_tokens: Some(budget),
+        ..read("src/auth.rs")
+    }));
+    assert!(resp.truncated);
+    assert!(big.starts_with(&resp.content));
+    assert!(resp.tokens <= budget, "{} > {budget}", resp.tokens);
+    let ctx = resp.deps_context.unwrap_or_default();
+    assert!(ctx.contains("pub fn issue_token"), "{ctx}");
+}
+
+#[test]
 fn project_map_and_estimate() {
     let (_dir, project) = setup();
     let map = ok(project.project_map(&GetProjectMapRequest {

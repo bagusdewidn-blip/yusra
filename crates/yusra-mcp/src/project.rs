@@ -350,7 +350,14 @@ impl Project {
             hash_file(&full, &rel)?
         };
         let text = String::from_utf8_lossy(&bytes);
-        let (content, content_tokens) = self.fit_text(&text, budget);
+        // Sisihkan sebagian anggaran untuk konteks dependensi; tanpa ini file
+        // besar menghabiskan seluruh anggaran dan `deps_context` selalu kosong.
+        let reserve = if req.with_deps {
+            (budget / 4).min(self.settings.repo_map_budget)
+        } else {
+            0
+        };
+        let (content, content_tokens) = self.fit_text(&text, budget - reserve);
         let truncated = content.len() < text.len() || (bytes.len() as u64) < size;
 
         let mut tokens = content_tokens;
