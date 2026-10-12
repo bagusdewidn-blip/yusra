@@ -20,6 +20,8 @@ tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
 blake3 = "1.8"
 ignore = "0.4"
+notify = "8.2"
+notify-debouncer-full = "0.7"
 tempfile = "3"
 insta = "1.49"
 

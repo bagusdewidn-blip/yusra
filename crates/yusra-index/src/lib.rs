@@ -8,6 +8,7 @@ mod adapter;
     feature = "lang-go"
 ))]
 mod common;
+mod filter;
 #[cfg(feature = "lang-go")]
 mod go;
 #[cfg(feature = "lang-python")]
@@ -17,8 +18,10 @@ mod rust;
 #[cfg(feature = "lang-typescript")]
 mod typescript;
 mod walk;
+mod watch;
 
 pub use adapter::{LanguageAdapter, adapter_for, builtin_adapters, parse};
+pub use filter::PathFilter;
 #[cfg(feature = "lang-go")]
 pub use go::GoAdapter;
 #[cfg(feature = "lang-python")]
@@ -30,6 +33,7 @@ pub use typescript::TypeScriptAdapter;
 pub use walk::{
     FileEntry, IndexedFile, ParsedFile, Skipped, Walk, YUSRA_IGNORE_FILE, index_file, walk,
 };
+pub use watch::{Change, DEBOUNCE, Watcher, watch};
 
 use yusra_core::Hash32;
 

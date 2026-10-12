@@ -5,7 +5,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use ignore::{WalkBuilder, overrides::OverrideBuilder};
+use ignore::{
+    WalkBuilder,
+    overrides::{Override, OverrideBuilder},
+};
 use yusra_core::{Hash32, RelPath, Symbol, Tag, YusraError};
 
 use crate::{LanguageAdapter, adapter_for, hash_bytes, parse};
@@ -52,38 +55,8 @@ pub struct Walk {
 /// `deny_read` tidak diterapkan di sini; itu tugas lapisan yang membaca isi
 /// file untuk agen.
 pub fn walk(root: &Path, extra_ignore: &[String]) -> Result<Walk, YusraError> {
-    let mut overrides = OverrideBuilder::new(root);
-    for pattern in extra_ignore {
-        if pattern.starts_with('!') {
-            return Err(YusraError::internal(format!(
-                "pola extra_ignore tidak boleh diawali '!': {pattern:?}"
-            )));
-        }
-        // Di override, pola tanpa `!` berarti whitelist; `!` berarti abaikan.
-        overrides.add(&format!("!{pattern}")).map_err(|e| {
-            YusraError::internal_with(format!("pola extra_ignore tidak valid: {pattern:?}"), e)
-        })?;
-    }
-    let overrides = overrides
-        .build()
-        .map_err(|e| YusraError::internal_with("pola extra_ignore tidak valid", e))?;
-
-    let mut builder = WalkBuilder::new(root);
-    builder
-        .hidden(false)
-        .parents(false)
-        .git_global(false)
-        .require_git(false)
-        .follow_links(false)
-        .add_custom_ignore_filename(YUSRA_IGNORE_FILE)
-        .overrides(overrides)
-        .filter_entry(|e| {
-            let name = e.file_name();
-            !(name == ".git" || (e.depth() == 1 && name == STATE_DIR))
-        });
-
     let mut out = Walk::default();
-    for result in builder.build() {
+    for result in walk_builder(root, extra_ignore)?.build() {
         let entry = match result {
             Ok(e) => e,
             Err(e) => {
@@ -113,6 +86,50 @@ pub fn walk(root: &Path, extra_ignore: &[String]) -> Result<Walk, YusraError> {
     }
     out.files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+/// Konfigurasi traversal bersama `walk` dan [`crate::PathFilter`], agar
+/// keduanya selalu memutuskan sama.
+pub(crate) fn walk_builder(
+    root: &Path,
+    extra_ignore: &[String],
+) -> Result<WalkBuilder, YusraError> {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .parents(false)
+        .git_global(false)
+        .require_git(false)
+        .follow_links(false)
+        .add_custom_ignore_filename(YUSRA_IGNORE_FILE)
+        .overrides(build_overrides(root, extra_ignore)?)
+        .filter_entry(|e| !is_state_path(e.file_name().to_str(), e.depth()));
+    Ok(builder)
+}
+
+/// `.git` di kedalaman mana pun dan `.yusra` langsung di bawah root.
+/// `depth` dihitung dari root: anak langsung root berkedalaman 1.
+pub(crate) fn is_state_path(name: Option<&str>, depth: usize) -> bool {
+    name == Some(".git") || (depth == 1 && name == Some(STATE_DIR))
+}
+
+/// Pola `extra_ignore` sebagai override. Pola berawalan `!` ditolak.
+fn build_overrides(root: &Path, extra_ignore: &[String]) -> Result<Override, YusraError> {
+    let mut overrides = OverrideBuilder::new(root);
+    for pattern in extra_ignore {
+        if pattern.starts_with('!') {
+            return Err(YusraError::internal(format!(
+                "pola extra_ignore tidak boleh diawali '!': {pattern:?}"
+            )));
+        }
+        // Di override, pola tanpa `!` berarti whitelist; `!` berarti abaikan.
+        overrides.add(&format!("!{pattern}")).map_err(|e| {
+            YusraError::internal_with(format!("pola extra_ignore tidak valid: {pattern:?}"), e)
+        })?;
+    }
+    overrides
+        .build()
+        .map_err(|e| YusraError::internal_with("pola extra_ignore tidak valid", e))
 }
 
 /// Hasil indexing satu file.
@@ -191,7 +208,7 @@ fn full_path(root: &Path, path: &RelPath) -> PathBuf {
 }
 
 /// Path relatif dengan pemisah `/` di semua platform, divalidasi `RelPath`.
-fn rel_path(root: &Path, path: &Path) -> Option<RelPath> {
+pub(crate) fn rel_path(root: &Path, path: &Path) -> Option<RelPath> {
     let mut parts = Vec::new();
     for c in path.strip_prefix(root).ok()?.components() {
         match c {

@@ -24,6 +24,8 @@ tree-sitter-python = { workspace = true, optional = true }
 tree-sitter-go = { workspace = true, optional = true }
 blake3.workspace = true
 ignore.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
