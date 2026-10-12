@@ -369,3 +369,31 @@ fn failed_initial_index_reaches_waiters() {
     project.mark_index_failed("terlambat");
     ok(project.wait_ready());
 }
+
+#[test]
+fn full_index_spans_several_parallel_batches() {
+    let (dir, project) = setup_unindexed();
+    for i in 0..600 {
+        write(
+            dir.path(),
+            &format!("src/gen/m{i:03}.rs"),
+            &format!("pub fn generated_fn_{i:03}() {{}}\n"),
+        );
+    }
+    let stats = ok(project.full_index());
+    // 600 file baru + src/auth.rs + src/token.rs; .env dan secrets dilewati.
+    assert_eq!(stats.files, 602, "{stats:?}");
+    assert_eq!(stats.updated, 602, "{stats:?}");
+    assert_eq!(stats.skipped, 2, "{stats:?}");
+    for i in [0, 255, 256, 599] {
+        let found = ok(project.search_symbols(&SearchSymbolsRequest {
+            query: format!("generated_fn_{i:03}"),
+            kind: None,
+            limit: None,
+        }));
+        assert_eq!(found.symbols.len(), 1, "{i}: {found:?}");
+        assert_eq!(found.symbols[0].path, format!("src/gen/m{i:03}.rs"));
+    }
+    let again = ok(project.full_index());
+    assert_eq!((again.files, again.updated), (602, 0), "{again:?}");
+}

@@ -19,6 +19,7 @@ schemars.workspace = true
 tracing.workspace = true
 ignore.workspace = true
 blake3.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

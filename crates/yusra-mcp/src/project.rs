@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use rayon::prelude::*;
 use yusra_core::{
     Hash32, ModelFamily, RelPath, SymbolKind, SymbolPath, TokenCount, TokenEstimator, YusraError,
 };
@@ -33,7 +34,8 @@ const DB_FILE: &str = "state.db";
 
 const SEARCH_LIMIT_DEFAULT: u32 = 50;
 const SEARCH_LIMIT_MAX: u32 = 200;
-/// File yang ditulis ke database per transaksi saat indexing penuh.
+/// File yang diparse paralel lalu ditulis ke database per transaksi saat
+/// indexing penuh.
 const WRITE_BATCH: usize = 256;
 
 /// Ringkasan satu putaran indexing.
@@ -163,6 +165,10 @@ impl Project {
 
     /// Telusuri seluruh root, tulis file yang baru atau berubah ke database,
     /// hapus yang hilang, dan bangun ulang cache tag.
+    ///
+    /// Baca dan parse berjalan paralel per batch di pool rayon milik
+    /// pemanggilan ini (dilepas setelahnya agar daemon idle tanpa thread
+    /// tambahan); penulisan ke database tetap berurutan per batch.
     pub fn full_index(&self) -> Result<IndexStats, YusraError> {
         let listing = walk(&self.root, &self.settings.extra_ignore)?;
         let known = self.store.file_hashes()?;
@@ -174,32 +180,44 @@ impl Project {
         let mut tags = BTreeMap::new();
         let mut pending = Vec::new();
         let now = now_ms();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("index-{i}"))
+            .build()
+            .map_err(|e| YusraError::internal_with("pool thread index gagal dibuat", e))?;
 
-        for entry in &listing.files {
-            if self.policy.is_denied(&entry.path) {
-                stats.skipped += 1;
-                continue;
-            }
-            let (indexed, file_tags) = match self.index_one(&entry.path) {
-                Ok(v) => v,
-                Err(YusraError::NotFound { .. }) => continue,
-                Err(e) => {
-                    tracing::warn!(path = %entry.path, error = %e, "file dilewati");
-                    stats.skipped += 1;
-                    continue;
+        for batch in listing.files.chunks(WRITE_BATCH) {
+            // `None` = cocok deny_read. Urutan hasil sama dengan `batch`.
+            let results: Vec<_> = pool.install(|| {
+                batch
+                    .par_iter()
+                    .map(|entry| {
+                        (!self.policy.is_denied(&entry.path)).then(|| self.index_one(&entry.path))
+                    })
+                    .collect()
+            });
+            for (entry, result) in batch.iter().zip(results) {
+                let (indexed, file_tags) = match result {
+                    None => {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                    Some(Ok(v)) => v,
+                    Some(Err(YusraError::NotFound { .. })) => continue,
+                    Some(Err(e)) => {
+                        tracing::warn!(path = %entry.path, error = %e, "file dilewati");
+                        stats.skipped += 1;
+                        continue;
+                    }
+                };
+                seen.insert(entry.path.clone());
+                tags.insert(entry.path.clone(), file_tags);
+                if known.get(&entry.path) != Some(&indexed.hash) {
+                    pending.push(indexed);
                 }
-            };
-            seen.insert(entry.path.clone());
-            tags.insert(entry.path.clone(), file_tags);
-            if known.get(&entry.path) != Some(&indexed.hash) {
-                pending.push(indexed);
-                if pending.len() >= WRITE_BATCH {
-                    stats.updated += self.write_indexed(&pending, now)?;
-                    pending.clear();
-                }
             }
+            stats.updated += self.write_indexed(&pending, now)?;
+            pending.clear();
         }
-        stats.updated += self.write_indexed(&pending, now)?;
 
         let gone: Vec<RelPath> = known.into_keys().filter(|p| !seen.contains(p)).collect();
         stats.removed = self.store.remove_files(&gone)?;
