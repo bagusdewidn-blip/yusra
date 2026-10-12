@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Spesifikasi modul dari `import`, `export ... from`, `require()`, dan `import()`.
-const IMPORTS_QUERY: &str = r#"
+pub(crate) const IMPORTS_QUERY: &str = r#"
 (import_statement source: (string (string_fragment) @import))
 (export_statement source: (string (string_fragment) @import))
 ((call_expression

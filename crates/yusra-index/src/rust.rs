@@ -9,14 +9,14 @@ use crate::{
     },
 };
 
-const IMPORTS_QUERY: &str = r"
+pub(crate) const IMPORTS_QUERY: &str = r"
 (use_declaration argument: (_) @import)
 (mod_item name: (identifier) @module !body)
 ";
 
 /// Query tag bawaan tree-sitter-rust tidak menangkap panggilan ber-path
 /// (`Session::new()`) dan rujukan tipe, jadi dipakai query sendiri.
-const TAGS_QUERY: &str = include_str!("../queries/rust-tags.scm");
+pub(crate) const TAGS_QUERY: &str = include_str!("../queries/rust-tags.scm");
 
 /// Path simbol Rust:
 /// - item di modul: `auth::login`

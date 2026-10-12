@@ -6,7 +6,7 @@ use crate::{
     common::{self, SymbolSink, attached_start, named_children, signature_between, text},
 };
 
-const IMPORTS_QUERY: &str = "(import_spec path: (_) @import)";
+pub(crate) const IMPORTS_QUERY: &str = "(import_spec path: (_) @import)";
 
 /// Path simbol Go: `MakeToken`, `Session`, method `Session::Refresh` (receiver
 /// pointer dan generic dibuang, `*Session[T]` menjadi `Session`).
