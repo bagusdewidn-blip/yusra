@@ -4,7 +4,7 @@ mod config;
 mod init;
 mod up;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -40,8 +40,10 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // stdout dipakai protokol MCP; semua log ke stderr. Level lewat YUSRA_LOG.
+    // Warna ANSI hanya untuk terminal: klien MCP menyimpan stderr apa adanya.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(
             EnvFilter::try_from_env("YUSRA_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )

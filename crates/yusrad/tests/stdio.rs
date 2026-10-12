@@ -131,6 +131,37 @@ fn up_requires_init() {
 }
 
 #[test]
+fn log_to_pipe_has_no_ansi_colors() {
+    let dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(e) => panic!("{e}"),
+    };
+    write(dir.path(), "src/lib.rs", "pub fn f() {}\n");
+    let init = match yusrad().args(["init", "--root"]).arg(dir.path()).output() {
+        Ok(o) => o,
+        Err(e) => panic!("{e}"),
+    };
+    assert!(init.status.success());
+    // stdin kosong: index awal selesai lalu server berhenti karena EOF.
+    let out = match yusrad()
+        .args(["up", "--stdio", "--root"])
+        .arg(dir.path())
+        .env("YUSRA_LOG", "info")
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => panic!("{e}"),
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("index awal selesai"), "{stderr}");
+    assert!(
+        !stderr.contains('\u{1b}'),
+        "stderr berisi kode ANSI: {stderr:?}"
+    );
+}
+
+#[test]
 fn stdio_session() {
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
