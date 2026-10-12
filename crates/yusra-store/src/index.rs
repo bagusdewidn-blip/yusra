@@ -161,8 +161,10 @@ impl Store {
     }
 
     /// Cari simbol yang `symbol_path`-nya memuat `query` (tanpa membedakan
-    /// huruf besar-kecil ASCII), opsional disaring `kind`. Urut path lalu
-    /// posisi; paling banyak `limit` hasil.
+    /// huruf besar-kecil ASCII), opsional disaring `kind`. Urut relevansi
+    /// (segmen terakhir sama persis termasuk huruf, lalu sama tanpa beda huruf,
+    /// lalu ada segmen berawalan `query`, lalu substring biasa), kemudian path
+    /// dan posisi; paling banyak `limit` hasil.
     pub fn search_symbols(
         &self,
         query: &str,
@@ -174,7 +176,18 @@ impl Store {
                 "SELECT {SYMBOL_COLUMNS} FROM symbols
                  WHERE instr(lower(symbol_path), lower(?1)) > 0
                    AND (?2 IS NULL OR kind = ?2)
-                 ORDER BY path, start_byte, symbol_path
+                 ORDER BY CASE
+                     WHEN symbol_path = ?1
+                       OR substr(symbol_path, -length(?1) - 2) = '::' || ?1
+                       THEN 0
+                     WHEN lower(symbol_path) = lower(?1)
+                       OR substr(lower(symbol_path), -length(?1) - 2) = '::' || lower(?1)
+                       THEN 1
+                     WHEN instr(lower(symbol_path), lower(?1)) = 1
+                       OR instr(lower(symbol_path), '::' || lower(?1)) > 0
+                       THEN 2
+                     ELSE 3
+                 END, path, start_byte, symbol_path
                  LIMIT ?3"
             ))?;
             stmt.query_map(
@@ -446,6 +459,44 @@ mod tests {
         assert_eq!(
             names(ok(store.search_symbols("h_t", None, 50))),
             ["refresh_token"]
+        );
+    }
+
+    #[test]
+    fn search_ranks_exact_then_prefix_before_path() {
+        let (_dir, store) = temp_store();
+        let a = rel("src/a.rs");
+        let z = rel("src/z.rs");
+        let sa = [
+            sym("src/a.rs", "refresh_token", SymbolKind::Function, 0..10, 1),
+            sym("src/a.rs", "TokenStore", SymbolKind::Struct, 11..20, 2),
+        ];
+        let sz = [
+            sym("src/z.rs", "Auth", SymbolKind::Struct, 0..10, 3),
+            sym("src/z.rs", "Auth::token", SymbolKind::Method, 11..20, 4),
+        ];
+        ok(store.replace_files(&[record(&a, 1, &sa, &[]), record(&z, 2, &sz, &[])]));
+
+        let names =
+            |v: Vec<Symbol>| -> Vec<String> { v.into_iter().map(|s| s.symbol_path.0).collect() };
+        assert_eq!(
+            names(ok(store.search_symbols("TOKEN", None, 50))),
+            ["Auth::token", "TokenStore", "refresh_token"]
+        );
+        assert_eq!(
+            names(ok(store.search_symbols("token", None, 1))),
+            ["Auth::token"]
+        );
+        // Huruf yang sama persis mendahului yang hanya sama tanpa beda huruf.
+        assert_eq!(
+            names(ok(store.search_symbols("auth", None, 50))),
+            ["Auth", "Auth::token"]
+        );
+        let sb = [sym("src/b.rs", "auth", SymbolKind::Function, 0..10, 5)];
+        ok(store.replace_files(&[record(&rel("src/b.rs"), 3, &sb, &[])]));
+        assert_eq!(
+            names(ok(store.search_symbols("Auth", None, 2))),
+            ["Auth", "auth"]
         );
     }
 }
