@@ -1,28 +1,82 @@
 ---
 source: crates/yusra-index/tests/rust_adapter.rs
-expression: out
+expression: render_tags(&tags)
 ---
 def helpers L6
 def Session L15
+ref String
 def State L20
 ref Session
 def new L27
 ref make_token
 def refresh L33
 ref make_token
+ref Display
+ref Session
 def fmt L40
+ref Formatter
+ref Result
 ref write
+ref Debug
+ref State
 def fmt L46
+ref Formatter
+ref Result
 ref write_str
+ref From
+ref Vec
+ref T
+ref State
+ref Clone
 def from L55
+ref Vec
+ref T
+ref State
 def Repository L60
+ref Option
+ref String
 def exists L63
 ref get
 ref is_some
 def make_token L70
+ref String
 ref format
 def auth L74
 def login L75
+ref make_token
 ref is_empty
 def platform L80
 def platform L85
+def open L90
+ref Store
+ref Vec
+ref SessionId
+ref Result
+ref Session
+ref Error
+ref Config
+ref load
+ref Session
+ref new
+ref login
+ref parse
+ref Vec
+ref with_capacity
+ref State
+ref Point
+ref info
+ref Ok
+ref Storage
+ref Clone
+ref Repository
+ref Cache
+ref S
+ref Send
+def get L103
+ref Option
+ref String
+ref Option
+ref Entry
+ref get
+ref map
+ref to_string

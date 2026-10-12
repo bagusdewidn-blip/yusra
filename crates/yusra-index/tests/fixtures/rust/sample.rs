@@ -86,3 +86,22 @@ pub mod auth {
         "windows"
     }
 }
+
+pub fn open(store: &Store, ids: Vec<SessionId>) -> Result<Session, Error> {
+    let cfg: config::Config = config::load();
+    let s = Session::new(cfg.id);
+    crate::auth::login();
+    let _ = parse::<u64>("1");
+    let v = Vec::<u8>::with_capacity(4);
+    let state = state::State::Active;
+    let point = Point { x: 0 };
+    tracing::info!("buka {}", s.id);
+    Ok(s)
+}
+
+impl<S: Storage + Clone> Repository for Cache<S> where S: Send {
+    fn get(&self, key: &str) -> Option<String> {
+        let entry: Option<&Entry> = self.map.get(key);
+        entry.map(|e| e.value.to_string())
+    }
+}

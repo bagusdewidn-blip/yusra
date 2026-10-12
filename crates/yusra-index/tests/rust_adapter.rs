@@ -3,6 +3,7 @@
 mod common;
 
 use common::{rel, render_symbols, render_tags, source_of, tree};
+use yusra_core::Tag;
 use yusra_index::{LanguageAdapter, RustAdapter, adapter_for, builtin_adapters};
 
 const SAMPLE: &str = include_str!("fixtures/rust/sample.rs");
@@ -49,6 +50,23 @@ fn tags_from_fixture() {
     let t = tree(&a, SAMPLE);
     let tags = a.tags(&rel("src/sample.rs"), &t, SAMPLE.as_bytes());
     insta::assert_snapshot!(render_tags(&tags));
+}
+
+#[test]
+fn definition_positions_are_not_refs() {
+    let a = adapter();
+    let src = "struct A;\nenum B {}\nunion U { x: u8 }\ntrait C { type Out; }\n\
+               type D = E;\nfn f<T>() -> Self {}\nmod m {}\n";
+    let t = tree(&a, src);
+    let refs: Vec<_> = a
+        .tags(&rel("src/x.rs"), &t, src.as_bytes())
+        .into_iter()
+        .filter_map(|tag| match tag {
+            Tag::Ref { name, .. } => Some(name),
+            Tag::Def { .. } => None,
+        })
+        .collect();
+    assert_eq!(refs, ["E"]);
 }
 
 #[test]

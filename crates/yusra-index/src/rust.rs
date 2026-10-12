@@ -14,6 +14,10 @@ const IMPORTS_QUERY: &str = r"
 (mod_item name: (identifier) @module !body)
 ";
 
+/// Query tag bawaan tree-sitter-rust tidak menangkap panggilan ber-path
+/// (`Session::new()`) dan rujukan tipe, jadi dipakai query sendiri.
+const TAGS_QUERY: &str = include_str!("../queries/rust-tags.scm");
+
 /// Path simbol Rust:
 /// - item di modul: `auth::login`
 /// - method inherent: `Session::refresh`
@@ -31,7 +35,7 @@ pub struct RustAdapter {
 impl RustAdapter {
     pub fn new() -> Result<Self, YusraError> {
         let language: Language = tree_sitter_rust::LANGUAGE.into();
-        let tags_query = Query::new(&language, tree_sitter_rust::TAGS_QUERY)
+        let tags_query = Query::new(&language, TAGS_QUERY)
             .map_err(|e| YusraError::internal_with("query tags Rust tidak valid", e))?;
         let imports_query = Query::new(&language, IMPORTS_QUERY)
             .map_err(|e| YusraError::internal_with("query impor Rust tidak valid", e))?;

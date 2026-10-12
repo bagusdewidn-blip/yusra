@@ -1,6 +1,6 @@
 ---
 source: crates/yusra-index/tests/rust_adapter.rs
-expression: "render_symbols(SAMPLE, &symbols)"
+expression: "render_symbols(&path, SAMPLE, &symbols)"
 ---
 module helpers L6-6 | mod helpers
 const MAX_RETRY L8-9 | pub const MAX_RETRY: u32
@@ -24,3 +24,6 @@ module auth L74-88 | pub mod auth
 function auth::login L75-77 | pub fn login() -> bool
 function auth::platform L79-82 | fn platform() -> &'static str
 function auth::platform#2 L84-87 | fn platform() -> &'static str
+function open L90-100 | pub fn open(store: &Store, ids: Vec<SessionId>) -> Result<Session, Error>
+impl impl Repository for Cache L102-107 | impl<S: Storage + Clone> Repository for Cache<S> where S: Send
+method <Cache as Repository>::get L103-106 | fn get(&self, key: &str) -> Option<String>
