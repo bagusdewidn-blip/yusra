@@ -87,8 +87,8 @@ pub struct RepoMap {
 
 /// Bangun repo map dari seluruh file terindeks. Path ganda di `files`
 /// hanya diambil kemunculan pertamanya.
-pub fn repo_map(
-    files: &[FileTags],
+pub fn repo_map<'a>(
+    files: impl IntoIterator<Item = &'a FileTags>,
     req: &RepoMapRequest<'_>,
     estimator: &dyn TokenEstimator,
 ) -> RepoMap {
@@ -145,9 +145,9 @@ struct Graph<'a> {
 }
 
 impl<'a> Graph<'a> {
-    fn build(input: &'a [FileTags], req: &RepoMapRequest<'_>) -> Self {
+    fn build(input: impl IntoIterator<Item = &'a FileTags>, req: &RepoMapRequest<'_>) -> Self {
         let mut seen = HashSet::new();
-        let files: Vec<&FileTags> = input.iter().filter(|f| seen.insert(&f.path)).collect();
+        let files: Vec<&FileTags> = input.into_iter().filter(|f| seen.insert(&f.path)).collect();
 
         let focus_set: HashSet<&RelPath> = req.focus_paths.iter().collect();
         let mention: HashSet<&str> = req.mention_idents.iter().map(String::as_str).collect();
