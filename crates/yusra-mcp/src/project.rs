@@ -15,9 +15,11 @@ use rayon::prelude::*;
 use yusra_core::{
     Hash32, ModelFamily, RelPath, SymbolKind, SymbolPath, TokenCount, TokenEstimator, YusraError,
 };
-use yusra_index::{Change, IndexedFile, LanguageAdapter, builtin_adapters, index_bytes, walk};
-use yusra_store::{FileRecord, Store};
-use yusra_tokens::{Estimator, FileTags, RepoMapRequest, repo_map};
+use yusra_index::{
+    Change, IndexedFile, LanguageAdapter, builtin_adapters, index_bytes, index_fingerprint, walk,
+};
+use yusra_store::{FileRecord, FileTagRows, Store, TagDef};
+use yusra_tokens::{DefLine, Estimator, FileTags, RepoMapRequest, repo_map};
 
 use crate::{
     schema::{
@@ -48,6 +50,14 @@ pub struct IndexStats {
     pub removed: usize,
     /// File yang dilewati karena `deny_read` atau gagal dibaca.
     pub skipped: usize,
+}
+
+/// Hasil membaca satu file saat indexing.
+enum Indexed {
+    /// Isi sama dengan yang tersimpan; tag diambil dari database tanpa parse.
+    Unchanged(FileTags),
+    /// Baru atau berubah: hasil parse beserta tag dalam bentuk tersimpan.
+    Fresh(IndexedFile, FileTags, FileTagRows),
 }
 
 /// Keadaan index awal. Tool dan watcher menunggu sampai bukan `Pending`.
@@ -95,6 +105,13 @@ impl Project {
             )));
         }
         let store = Store::open(&state.join(DB_FILE))?;
+        // Index dari indexer lain (query, adapter, atau batas ukuran parse
+        // berbeda) bisa memuat simbol dan tag yang kini salah.
+        let fingerprint = format!("{}/max{}", index_fingerprint(), settings.max_file_bytes);
+        if store.index_fingerprint()?.as_deref() != Some(fingerprint.as_str()) {
+            tracing::info!(%fingerprint, "indexer berubah, index dibangun ulang");
+            store.reset_index(&fingerprint)?;
+        }
         Ok(Self {
             policy: PathPolicy::new(&settings.deny_read)?,
             adapters: builtin_adapters()?,
@@ -164,7 +181,8 @@ impl Project {
     }
 
     /// Telusuri seluruh root, tulis file yang baru atau berubah ke database,
-    /// hapus yang hilang, dan bangun ulang cache tag.
+    /// hapus yang hilang, dan bangun ulang cache tag. File yang hash-nya sama
+    /// dengan yang tersimpan tidak diparse; tagnya dimuat dari database.
     ///
     /// Baca dan parse berjalan paralel per batch di pool rayon milik
     /// pemanggilan ini (dilepas setelahnya agar daemon idle tanpa thread
@@ -172,6 +190,7 @@ impl Project {
     pub fn full_index(&self) -> Result<IndexStats, YusraError> {
         let listing = walk(&self.root, &self.settings.extra_ignore)?;
         let known = self.store.file_hashes()?;
+        let stored = self.store.all_tags()?;
         let mut stats = IndexStats {
             skipped: listing.skipped.len(),
             ..IndexStats::default()
@@ -191,12 +210,14 @@ impl Project {
                 batch
                     .par_iter()
                     .map(|entry| {
-                        (!self.policy.is_denied(&entry.path)).then(|| self.index_one(&entry.path))
+                        let path = &entry.path;
+                        let prev = known.get(path).zip(stored.get(path));
+                        (!self.policy.is_denied(path)).then(|| self.index_one(path, prev))
                     })
                     .collect()
             });
             for (entry, result) in batch.iter().zip(results) {
-                let (indexed, file_tags) = match result {
+                let indexed = match result {
                     None => {
                         stats.skipped += 1;
                         continue;
@@ -210,10 +231,14 @@ impl Project {
                     }
                 };
                 seen.insert(entry.path.clone());
+                let file_tags = match indexed {
+                    Indexed::Unchanged(file_tags) => file_tags,
+                    Indexed::Fresh(file, file_tags, rows) => {
+                        pending.push((file, rows));
+                        file_tags
+                    }
+                };
                 tags.insert(entry.path.clone(), file_tags);
-                if known.get(&entry.path) != Some(&indexed.hash) {
-                    pending.push(indexed);
-                }
             }
             stats.updated += self.write_indexed(&pending, now)?;
             pending.clear();
@@ -237,15 +262,16 @@ impl Project {
         for change in changes {
             match change {
                 Change::Upsert(path) if !self.policy.is_denied(path) => {
-                    match self.index_one(path) {
-                        Ok((indexed, file_tags)) => {
-                            stats.updated +=
-                                self.write_indexed(std::slice::from_ref(&indexed), now)?;
+                    match self.index_one(path, None) {
+                        Ok(Indexed::Fresh(file, file_tags, rows)) => {
+                            stats.updated += self.write_indexed(&[(file, rows)], now)?;
                             self.tags
                                 .write()
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .insert(path.clone(), file_tags);
                         }
+                        // Tanpa `prev`, hasilnya selalu `Fresh`.
+                        Ok(Indexed::Unchanged(_)) => {}
                         Err(YusraError::NotFound { .. }) => {
                             stats.removed += self.remove_tree(path)?
                         }
@@ -282,26 +308,42 @@ impl Project {
         self.store.remove_files(&doomed)
     }
 
-    fn index_one(&self, path: &RelPath) -> Result<(IndexedFile, FileTags), YusraError> {
+    /// Baca dan index satu file. `prev` = hash dan tag yang tersimpan; jika
+    /// isi file masih sama, parse dilewati.
+    fn index_one(
+        &self,
+        path: &RelPath,
+        prev: Option<(&Hash32, &FileTagRows)>,
+    ) -> Result<Indexed, YusraError> {
         let full = self.full_path(path);
         let meta = fs::symlink_metadata(&full).map_err(|e| io_error(e, path))?;
         if !meta.file_type().is_file() {
             return Err(not_found("file", path.as_str()));
         }
         let bytes = fs::read(&full).map_err(|e| io_error(e, path))?;
+        if let Some((hash, rows)) = prev
+            && hash_bytes(&bytes) == *hash
+        {
+            return Ok(Indexed::Unchanged(tags_from_rows(path.clone(), rows)));
+        }
         let indexed = index_bytes(path, &bytes, &self.adapters, self.settings.max_file_bytes)?;
         let tags = indexed.parsed.as_ref().map_or(&[][..], |p| &p.tags[..]);
         let file_tags = FileTags::from_tags(path.clone(), tags, &bytes);
-        Ok((indexed, file_tags))
+        let rows = rows_from_tags(&file_tags);
+        Ok(Indexed::Fresh(indexed, file_tags, rows))
     }
 
-    fn write_indexed(&self, files: &[IndexedFile], now: i64) -> Result<usize, YusraError> {
+    fn write_indexed(
+        &self,
+        files: &[(IndexedFile, FileTagRows)],
+        now: i64,
+    ) -> Result<usize, YusraError> {
         if files.is_empty() {
             return Ok(0);
         }
         let records: Vec<FileRecord<'_>> = files
             .iter()
-            .map(|f| FileRecord {
+            .map(|(f, tags)| FileRecord {
                 path: &f.path,
                 hash: f.hash,
                 language: f.language,
@@ -310,6 +352,7 @@ impl Project {
                 // Resolusi import ke path belum ada; `read_file` memakai
                 // rujukan tag untuk konteks dependensi.
                 deps: &[],
+                tags,
             })
             .collect();
         self.store.replace_files(&records)?;
@@ -547,6 +590,48 @@ impl Project {
             tokens: total.tokens,
             approximate: total.approximate,
         })
+    }
+}
+
+/// Bentuk tersimpan [`FileTags`]: rujukan diringkas menjadi jumlah per nama.
+fn rows_from_tags(tags: &FileTags) -> FileTagRows {
+    let mut refs: BTreeMap<&str, u32> = BTreeMap::new();
+    for r in &tags.refs {
+        *refs.entry(r.as_str()).or_default() += 1;
+    }
+    FileTagRows {
+        defs: tags
+            .defs
+            .iter()
+            .map(|d| TagDef {
+                name: d.name.clone(),
+                line: d.line,
+                text: d.text.clone(),
+            })
+            .collect(),
+        refs: refs.into_iter().map(|(n, c)| (n.to_owned(), c)).collect(),
+    }
+}
+
+/// Kebalikan [`rows_from_tags`]. Urutan rujukan tidak dipakai repo map,
+/// hanya jumlahnya.
+fn tags_from_rows(path: RelPath, rows: &FileTagRows) -> FileTags {
+    FileTags {
+        path,
+        defs: rows
+            .defs
+            .iter()
+            .map(|d| DefLine {
+                name: d.name.clone(),
+                line: d.line,
+                text: d.text.clone(),
+            })
+            .collect(),
+        refs: rows
+            .refs
+            .iter()
+            .flat_map(|(name, count)| (0..*count).map(move |_| name.clone()))
+            .collect(),
     }
 }
 

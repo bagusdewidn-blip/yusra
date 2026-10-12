@@ -1,4 +1,5 @@
-//! Tabel index: `files`, `symbols`, `file_deps`.
+//! Tabel index: `files`, `symbols`, `file_deps`, `tag_defs`, `tag_refs`,
+//! dan identitas indexer di `index_meta`.
 
 use std::{collections::HashMap, ops::Range};
 
@@ -7,8 +8,30 @@ use yusra_core::{Hash32, RelPath, Symbol, SymbolKind, SymbolPath, YusraError};
 
 use crate::store::{Store, db_err};
 
-/// Satu file hasil indexing, siap disimpan. Simbol dan dependensi lama file
-/// yang sama diganti seluruhnya.
+/// Kunci `index_meta` untuk identitas indexer yang menghasilkan index.
+const FINGERPRINT_KEY: &str = "indexer";
+
+/// Satu definisi untuk repo map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagDef {
+    pub name: String,
+    /// Dimulai dari 1.
+    pub line: u32,
+    /// Teks baris definisi, sudah dirapikan pemanggil.
+    pub text: String,
+}
+
+/// Bahan repo map satu file seperti disimpan: definisi dalam urutan sumber
+/// dan jumlah kemunculan tiap nama rujukan.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileTagRows {
+    pub defs: Vec<TagDef>,
+    /// Nama unik, jumlah > 0.
+    pub refs: Vec<(String, u32)>,
+}
+
+/// Satu file hasil indexing, siap disimpan. Simbol, dependensi, dan tag lama
+/// file yang sama diganti seluruhnya.
 #[derive(Clone, Copy, Debug)]
 pub struct FileRecord<'a> {
     pub path: &'a RelPath,
@@ -21,6 +44,7 @@ pub struct FileRecord<'a> {
     pub symbols: &'a [Symbol],
     /// File lain yang diimpor file ini. Tidak harus sudah terindeks.
     pub deps: &'a [RelPath],
+    pub tags: &'a FileTagRows,
 }
 
 impl Store {
@@ -50,6 +74,20 @@ impl Store {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 )
                 .map_err(db_err("gagal menyiapkan kueri symbols"))?;
+            let mut clear_defs = tx
+                .prepare_cached("DELETE FROM tag_defs WHERE path = ?1")
+                .map_err(db_err("gagal menyiapkan kueri tag_defs"))?;
+            let mut clear_refs = tx
+                .prepare_cached("DELETE FROM tag_refs WHERE path = ?1")
+                .map_err(db_err("gagal menyiapkan kueri tag_refs"))?;
+            let mut insert_def = tx
+                .prepare_cached(
+                    "INSERT INTO tag_defs (path, seq, name, line, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(db_err("gagal menyiapkan kueri tag_defs"))?;
+            let mut insert_ref = tx
+                .prepare_cached("INSERT INTO tag_refs (path, name, count) VALUES (?1, ?2, ?3)")
+                .map_err(db_err("gagal menyiapkan kueri tag_refs"))?;
             let mut insert_dep = tx
                 .prepare_cached(
                     "INSERT OR IGNORE INTO file_deps (from_path, to_path) VALUES (?1, ?2)",
@@ -97,6 +135,22 @@ impl Store {
                         .execute([path, dep.as_str()])
                         .map_err(db_err("gagal menyimpan dependensi"))?;
                 }
+                clear_defs
+                    .execute([path])
+                    .map_err(db_err("gagal menghapus tag lama"))?;
+                clear_refs
+                    .execute([path])
+                    .map_err(db_err("gagal menghapus tag lama"))?;
+                for (seq, def) in rec.tags.defs.iter().enumerate() {
+                    insert_def
+                        .execute(params![path, seq as i64, def.name, def.line, def.text])
+                        .map_err(db_err("gagal menyimpan definisi tag"))?;
+                }
+                for (name, count) in &rec.tags.refs {
+                    insert_ref
+                        .execute(params![path, name, count])
+                        .map_err(db_err("gagal menyimpan rujukan tag"))?;
+                }
             }
             Ok(())
         })
@@ -120,6 +174,77 @@ impl Store {
                     .map_err(db_err("gagal menghapus file"))?;
             }
             Ok(removed)
+        })
+    }
+
+    /// Tag semua file terindeks. Setiap file di `files` punya entri, juga
+    /// yang tanpa tag, sehingga ketiadaan entri berarti file belum terindeks.
+    pub fn all_tags(&self) -> Result<HashMap<RelPath, FileTagRows>, YusraError> {
+        type Rows = (
+            Vec<String>,
+            Vec<(String, String, u32, String)>,
+            Vec<(String, String, u32)>,
+        );
+        let (files, defs, refs): Rows = self.read(|c| {
+            let files = c
+                .prepare("SELECT path FROM files")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            let defs = c
+                .prepare("SELECT path, name, line, text FROM tag_defs ORDER BY path, seq")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let refs = c
+                .prepare("SELECT path, name, count FROM tag_refs ORDER BY path, name")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((files, defs, refs))
+        })?;
+        let mut out = HashMap::with_capacity(files.len());
+        for p in files {
+            out.insert(rel_path_from_db(&p)?, FileTagRows::default());
+        }
+        for (p, name, line, text) in defs {
+            if let Some(tags) = out.get_mut(&rel_path_from_db(&p)?) {
+                tags.defs.push(TagDef { name, line, text });
+            }
+        }
+        for (p, name, count) in refs {
+            if let Some(tags) = out.get_mut(&rel_path_from_db(&p)?) {
+                tags.refs.push((name, count));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Identitas indexer yang menghasilkan index tersimpan, `None` jika belum
+    /// pernah diatur.
+    pub fn index_fingerprint(&self) -> Result<Option<String>, YusraError> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT value FROM index_meta WHERE key = ?1",
+                [FINGERPRINT_KEY],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+    }
+
+    /// Kosongkan seluruh index (file, simbol, dependensi, tag) dan catat
+    /// `fingerprint` sebagai identitas indexer baru, dalam satu transaksi.
+    pub fn reset_index(&self, fingerprint: &str) -> Result<(), YusraError> {
+        self.write(|tx| {
+            for table in ["tag_refs", "tag_defs", "file_deps", "symbols", "files"] {
+                tx.execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(db_err("gagal mengosongkan index"))?;
+            }
+            tx.execute(
+                "INSERT INTO index_meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [FINGERPRINT_KEY, fingerprint],
+            )
+            .map_err(db_err("gagal menyimpan identitas indexer"))?;
+            Ok(())
         })
     }
 
@@ -325,7 +450,96 @@ mod tests {
             indexed_at: 1_700_000_000_000,
             symbols,
             deps,
+            tags: &NO_TAGS,
         }
+    }
+
+    static NO_TAGS: FileTagRows = FileTagRows {
+        defs: Vec::new(),
+        refs: Vec::new(),
+    };
+
+    fn def(name: &str, line: u32) -> TagDef {
+        TagDef {
+            name: name.to_owned(),
+            line,
+            text: format!("fn {name}()"),
+        }
+    }
+
+    #[test]
+    fn tags_round_trip_replace_and_cascade() {
+        let (_dir, store) = temp_store();
+        let a = rel("src/a.rs");
+        let b = rel("src/b.rs");
+        let tags_a = FileTagRows {
+            defs: vec![def("zeta", 1), def("alpha", 2)],
+            refs: vec![("alpha".to_owned(), 3), ("other".to_owned(), 1)],
+        };
+        ok(store.replace_files(&[
+            FileRecord {
+                tags: &tags_a,
+                ..record(&a, 1, &[], &[])
+            },
+            record(&b, 2, &[], &[]),
+        ]));
+        let all = ok(store.all_tags());
+        assert_eq!(all.len(), 2);
+        // Urutan definisi mengikuti sumber, bukan nama.
+        assert_eq!(all.get(&a), Some(&tags_a));
+        // File tanpa tag tetap punya entri.
+        assert_eq!(all.get(&b), Some(&FileTagRows::default()));
+
+        let tags_a2 = FileTagRows {
+            defs: vec![def("beta", 5)],
+            refs: vec![],
+        };
+        ok(store.replace_file(&FileRecord {
+            tags: &tags_a2,
+            ..record(&a, 3, &[], &[])
+        }));
+        assert_eq!(ok(store.all_tags()).get(&a), Some(&tags_a2));
+
+        ok(store.remove_files(std::slice::from_ref(&a)));
+        let all = ok(store.all_tags());
+        assert_eq!(all.len(), 1);
+        assert!(!all.contains_key(&a));
+        let left: i64 = match store.read(|c| {
+            c.query_row(
+                "SELECT (SELECT count(*) FROM tag_defs) + (SELECT count(*) FROM tag_refs)",
+                [],
+                |r| r.get(0),
+            )
+        }) {
+            Ok(n) => n,
+            Err(e) => panic!("{e}"),
+        };
+        assert_eq!(left, 0, "tag ikut terhapus bersama file");
+    }
+
+    #[test]
+    fn reset_index_clears_everything_and_records_fingerprint() {
+        let (_dir, store) = temp_store();
+        assert_eq!(ok(store.index_fingerprint()), None);
+        let a = rel("src/a.rs");
+        let syms = [sym("src/a.rs", "f", SymbolKind::Function, 0..5, 1)];
+        let tags = FileTagRows {
+            defs: vec![def("f", 1)],
+            refs: vec![("g".to_owned(), 1)],
+        };
+        ok(store.replace_file(&FileRecord {
+            tags: &tags,
+            ..record(&a, 1, &syms, std::slice::from_ref(&a))
+        }));
+
+        ok(store.reset_index("v1"));
+        assert_eq!(ok(store.index_fingerprint()).as_deref(), Some("v1"));
+        assert!(ok(store.file_hashes()).is_empty());
+        assert!(ok(store.all_tags()).is_empty());
+        assert!(ok(store.search_symbols("f", None, 50)).is_empty());
+
+        ok(store.reset_index("v2"));
+        assert_eq!(ok(store.index_fingerprint()).as_deref(), Some("v2"));
     }
 
     #[test]

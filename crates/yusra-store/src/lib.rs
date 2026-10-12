@@ -8,5 +8,5 @@ mod index;
 mod store;
 
 pub use audit::AuditEntry;
-pub use index::FileRecord;
+pub use index::{FileRecord, FileTagRows, TagDef};
 pub use store::Store;

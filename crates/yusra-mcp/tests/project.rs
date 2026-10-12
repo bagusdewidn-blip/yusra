@@ -6,6 +6,7 @@ use yusra_mcp::{
     EstimateTokensRequest, GetProjectMapRequest, ModelFamilyParam, Project, ReadFileRequest,
     ReadSymbolRequest, STATE_DIR, SearchSymbolsRequest, Settings, SymbolKindParam,
 };
+use yusra_store::{FileRecord, FileTagRows, TagDef};
 
 const AUTH_RS: &str = "\
 use crate::token::issue_token;
@@ -69,12 +70,24 @@ fn setup_unindexed() -> (tempfile::TempDir, Project) {
     if let Err(e) = fs::create_dir(root.join(STATE_DIR)) {
         panic!("{e}");
     }
-    let settings = Settings {
+    let project = ok(Project::open(root, test_settings()));
+    (dir, project)
+}
+
+fn test_settings() -> Settings {
+    Settings {
         deny_read: [".env", "config/secrets.py"].map(str::to_owned).to_vec(),
         ..Settings::default()
-    };
-    let project = ok(Project::open(root, settings));
-    (dir, project)
+    }
+}
+
+fn map_text(project: &Project) -> String {
+    ok(project.project_map(&GetProjectMapRequest {
+        focus_paths: vec!["src/auth.rs".to_owned()],
+        mention_idents: vec![],
+        max_tokens: None,
+    }))
+    .map
 }
 
 fn setup() -> (tempfile::TempDir, Project) {
@@ -396,4 +409,86 @@ fn full_index_spans_several_parallel_batches() {
     }
     let again = ok(project.full_index());
     assert_eq!((again.files, again.updated), (602, 0), "{again:?}");
+}
+
+#[test]
+fn reopen_reuses_stored_tags_without_reparse() {
+    let (dir, project) = setup();
+    let before = map_text(&project);
+    assert!(before.contains("pub fn issue_token"), "{before}");
+    drop(project);
+
+    let again = ok(Project::open(dir.path(), test_settings()));
+    let stats = ok(again.full_index());
+    assert_eq!((stats.files, stats.updated), (2, 0), "{stats:?}");
+    assert_eq!(map_text(&again), before, "tag dari database harus identik");
+
+    // File yang berubah saat daemon mati tetap diparse ulang.
+    write(
+        dir.path(),
+        "src/token.rs",
+        "pub fn mint_token() {}
+",
+    );
+    drop(again);
+    let third = ok(Project::open(dir.path(), test_settings()));
+    let stats = ok(third.full_index());
+    assert_eq!((stats.files, stats.updated), (2, 1), "{stats:?}");
+    let map = map_text(&third);
+    assert!(!map.contains("pub fn issue_token"), "{map}");
+    let found = ok(third.search_symbols(&SearchSymbolsRequest {
+        query: "mint_token".to_owned(),
+        kind: None,
+        limit: None,
+    }));
+    assert_eq!(found.symbols.len(), 1, "{found:?}");
+}
+
+#[test]
+fn changed_indexer_settings_rebuild_index() {
+    let (dir, project) = setup();
+    drop(project);
+    // Batas ukuran parse berbeda mengubah sidik indexer.
+    let settings = Settings {
+        max_file_bytes: 4096,
+        ..test_settings()
+    };
+    let again = ok(Project::open(dir.path(), settings.clone()));
+    let stats = ok(again.full_index());
+    assert_eq!((stats.files, stats.updated), (2, 2), "{stats:?}");
+    drop(again);
+    let same = ok(Project::open(dir.path(), settings));
+    let stats = ok(same.full_index());
+    assert_eq!(stats.updated, 0, "{stats:?}");
+}
+
+#[test]
+fn unchanged_file_takes_tags_from_database() {
+    let (dir, project) = setup();
+    // Ganti tag tersimpan token.rs tanpa mengubah hash-nya. Jika full_index
+    // berikutnya mem-parse ulang, teks ini tidak akan muncul.
+    let path = ok(RelPath::parse("src/token.rs"));
+    let tags = FileTagRows {
+        defs: vec![TagDef {
+            name: "issue_token".to_owned(),
+            line: 1,
+            text: "pub fn issue_token /* dari database */".to_owned(),
+        }],
+        refs: vec![],
+    };
+    ok(project.store().replace_file(&FileRecord {
+        path: &path,
+        hash: yusra_index::hash_bytes(TOKEN_RS.as_bytes()),
+        language: Some("rust"),
+        indexed_at: 0,
+        symbols: &[],
+        deps: &[],
+        tags: &tags,
+    }));
+    drop(project);
+
+    let again = ok(Project::open(dir.path(), test_settings()));
+    ok(again.full_index());
+    let map = map_text(&again);
+    assert!(map.contains("/* dari database */"), "{map}");
 }

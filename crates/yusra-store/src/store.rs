@@ -8,7 +8,10 @@ use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use rusqlite_migration::{M, Migrations, SchemaVersion};
 use yusra_core::YusraError;
 
-const MIGRATIONS: &[M<'static>] = &[M::up(include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[M<'static>] = &[
+    M::up(include_str!("../migrations/0001_init.sql")),
+    M::up(include_str!("../migrations/0002_tags.sql")),
+];
 
 /// Lama menunggu lock SQLite dari proses atau koneksi lain sebelum menyerah.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -209,6 +212,7 @@ mod tests {
             "edits",
             "file_deps",
             "files",
+            "index_meta",
             "locks",
             "oauth_clients",
             "refresh_tokens",
@@ -216,6 +220,8 @@ mod tests {
             "session_files",
             "sessions",
             "symbols",
+            "tag_defs",
+            "tag_refs",
             "verify_approvals",
         ];
         assert_eq!(tables, expected);
@@ -227,6 +233,34 @@ mod tests {
         drop(store);
         let again = ok(Store::open(&dir.path().join("state.db")));
         assert_eq!(ok(again.schema_version()), MIGRATIONS.len() as u32);
+    }
+
+    #[test]
+    fn upgrade_from_0001_drops_untagged_index() {
+        let dir = match tempfile::tempdir() {
+            Ok(d) => d,
+            Err(e) => panic!("{e}"),
+        };
+        let path = dir.path().join("state.db");
+        {
+            let mut conn = match Connection::open(&path) {
+                Ok(c) => c,
+                Err(e) => panic!("{e}"),
+            };
+            if let Err(e) = migrations().to_version(&mut conn, 1) {
+                panic!("{e}");
+            }
+            if let Err(e) = conn.execute(
+                "INSERT INTO files (path, blake3, language, indexed_at)
+                 VALUES ('src/a.rs', zeroblob(32), 'rust', 0)",
+                [],
+            ) {
+                panic!("{e}");
+            }
+        }
+        let store = ok(Store::open(&path));
+        assert_eq!(ok(store.schema_version()), MIGRATIONS.len() as u32);
+        assert!(ok(store.file_hashes()).is_empty());
     }
 
     #[test]
