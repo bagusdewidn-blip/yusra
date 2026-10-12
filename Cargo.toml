@@ -10,6 +10,10 @@ publish = false
 
 [workspace.dependencies]
 yusra-core = { path = "crates/yusra-core" }
+yusra-index = { path = "crates/yusra-index" }
+yusra-store = { path = "crates/yusra-store" }
+yusra-tokens = { path = "crates/yusra-tokens" }
+yusra-mcp = { path = "crates/yusra-mcp" }
 
 # 0.27 butuh Rust 1.90, di atas MSRV
 tree-sitter = "0.26"
@@ -28,6 +32,17 @@ insta = "1.49"
 rusqlite = { version = "0.39", features = ["bundled"] }
 rusqlite_migration = "2.5"
 tiktoken-rs = "0.12"
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "io-std", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# versi mayor harus sama dengan yang dipakai rmcp agar derive JsonSchema cocok
+schemars = "1"
+toml = "1.1"
+clap = { version = "4.6", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

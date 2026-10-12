@@ -1,19 +1,61 @@
-//! Daemon dan CLI yusra. Perintah diisi bertahap sesuai milestone M0.
+//! Daemon dan CLI yusra.
 
-use std::process::ExitCode;
+mod config;
+mod init;
+mod up;
+
+use std::{path::PathBuf, process::ExitCode};
+
+use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
+
+#[derive(Parser)]
+#[command(
+    name = "yusrad",
+    version,
+    about = "Middleware MCP antara repo lokal dan agen AI"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Siapkan .yusra/ di root proyek dan tambahkan ke .git/info/exclude.
+    Init {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Jalankan daemon untuk satu proyek.
+    Up {
+        /// Layani satu klien MCP lewat stdin/stdout.
+        #[arg(long)]
+        stdio: bool,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+}
 
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        Some("--version" | "-V") => {
-            println!("yusrad {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        _ => {
-            eprintln!(
-                "yusrad {}: belum ada perintah yang diimplementasikan",
-                env!("CARGO_PKG_VERSION")
-            );
-            ExitCode::from(2)
+    let cli = Cli::parse();
+    // stdout dipakai protokol MCP; semua log ke stderr. Level lewat YUSRA_LOG.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            EnvFilter::try_from_env("YUSRA_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let result = match cli.command {
+        Command::Init { root } => init::run(&root),
+        Command::Up { stdio, root } => up::run(&root, stdio),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
         }
     }
 }

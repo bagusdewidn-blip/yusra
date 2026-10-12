@@ -8,6 +8,20 @@ publish.workspace = true
 
 [dependencies]
 yusra-core.workspace = true
+yusra-index.workspace = true
+yusra-store.workspace = true
+yusra-tokens.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+ignore.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

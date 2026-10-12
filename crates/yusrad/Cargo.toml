@@ -12,6 +12,19 @@ path = "src/main.rs"
 
 [dependencies]
 yusra-core.workspace = true
+yusra-index.workspace = true
+yusra-mcp.workspace = true
+tokio.workspace = true
+serde.workspace = true
+toml.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
