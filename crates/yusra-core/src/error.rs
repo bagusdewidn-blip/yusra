@@ -110,6 +110,11 @@ pub enum YusraError {
         path: String,
         reason: PathRejection,
     },
+    /// Cocok `deny_read`, berada di direktori internal (`.git`, `.yusra`),
+    /// atau symlink yang keluar dari root.
+    PathDenied {
+        path: String,
+    },
     NotFound {
         kind: &'static str,
         id: String,
@@ -142,6 +147,7 @@ impl YusraError {
     pub const fn code(&self) -> ErrorCode {
         match self {
             Self::InvalidPath { .. } => ErrorCode::InvalidPath,
+            Self::PathDenied { .. } => ErrorCode::PathDenied,
             Self::NotFound { .. } => ErrorCode::NotFound,
             Self::Internal { .. } => ErrorCode::Internal,
         }
@@ -154,6 +160,7 @@ impl fmt::Display for YusraError {
             Self::InvalidPath { path, reason } => {
                 write!(f, "path tidak valid ({reason}): {path:?}")
             }
+            Self::PathDenied { path } => write!(f, "akses ke path ditolak: {path:?}"),
             Self::NotFound { kind, id } => write!(f, "{kind} tidak ditemukan: {id:?}"),
             Self::Internal { message, .. } => write!(f, "kesalahan internal: {message}"),
         }
@@ -184,6 +191,10 @@ mod tests {
             id: "x".to_owned(),
         };
         assert_eq!(not_found.code().as_str(), "not_found");
+        let denied = YusraError::PathDenied {
+            path: ".env".to_owned(),
+        };
+        assert_eq!(denied.code().as_str(), "path_denied");
         assert_eq!(YusraError::internal("x").code().as_str(), "internal");
     }
 
