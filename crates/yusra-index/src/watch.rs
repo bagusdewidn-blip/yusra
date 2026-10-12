@@ -10,7 +10,10 @@ use std::{
 
 use notify_debouncer_full::{
     DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache, new_debouncer,
-    notify::{EventKind, RecommendedWatcher, RecursiveMode, event::ModifyKind},
+    notify::{
+        EventKind, RecommendedWatcher, RecursiveMode,
+        event::{AccessKind, AccessMode, ModifyKind},
+    },
 };
 use yusra_core::{RelPath, YusraError};
 
@@ -87,6 +90,9 @@ fn classify(root: &Path, filter: &mut PathFilter, events: &[DebouncedEvent]) -> 
         if event.need_rescan() {
             return vec![Change::Rescan];
         }
+        if is_read_only_access(&event.kind) {
+            continue;
+        }
         // Direktori yang dibuat atau dipindah masuk bisa sudah berisi file
         // yang tidak sempat menghasilkan event sendiri.
         let may_add_dir = matches!(
@@ -120,6 +126,14 @@ fn classify(root: &Path, filter: &mut PathFilter, events: &[DebouncedEvent]) -> 
     out.into_values().collect()
 }
 
+/// Event akses tanpa penulisan (inotify `OPEN`, `CLOSE_NOWRITE`). Harus
+/// dibuang: membaca file, termasuk saat filter memuat `.gitignore` atau
+/// indexer membaca isi file, akan memicu event baru dan berputar tanpa akhir.
+/// `Close(Write)` dipertahankan karena menandai penulisan yang selesai.
+fn is_read_only_access(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::Access(a) if *a != AccessKind::Close(AccessMode::Write))
+}
+
 fn classify_path(
     filter: &mut PathFilter,
     abs: &Path,
@@ -147,5 +161,143 @@ fn classify_path(
         }
         // Tidak bisa dibaca (izin, dll.): tidak pasti, minta penelusuran ulang.
         Err(_) => Some(Change::Rescan),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, time::Instant};
+
+    use notify_debouncer_full::notify::{
+        Event,
+        event::{CreateKind, DataChange, RemoveKind},
+    };
+
+    use super::*;
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        filter: PathFilter,
+    }
+
+    impl Fixture {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let dir = match tempfile::tempdir() {
+                Ok(d) => d,
+                Err(e) => panic!("{e}"),
+            };
+            let root = match fs::canonicalize(dir.path()) {
+                Ok(r) => r,
+                Err(e) => panic!("{e}"),
+            };
+            for (path, content) in files {
+                let full = root.join(path);
+                if let Some(parent) = full.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    panic!("{e}");
+                }
+                if let Err(e) = fs::write(&full, content) {
+                    panic!("{e}");
+                }
+            }
+            let filter = match PathFilter::new(&root, &[]) {
+                Ok(f) => f,
+                Err(e) => panic!("{e}"),
+            };
+            Self {
+                _dir: dir,
+                root,
+                filter,
+            }
+        }
+
+        fn event(&self, kind: EventKind, path: &str) -> DebouncedEvent {
+            DebouncedEvent::new(
+                Event::new(kind).add_path(self.root.join(path)),
+                Instant::now(),
+            )
+        }
+
+        fn classify(&mut self, events: &[DebouncedEvent]) -> Vec<Change> {
+            classify(&self.root, &mut self.filter, events)
+        }
+    }
+
+    fn rel(raw: &str) -> RelPath {
+        match RelPath::parse(raw) {
+            Ok(p) => p,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn reading_ignore_rules_is_not_a_change() {
+        // Urutan inotify saat filter memuat `.gitignore` lalu file baru ditulis.
+        let mut f = Fixture::new(&[(".gitignore", "*.log\n"), ("src/new.rs", "x")]);
+        let events = [
+            f.event(
+                EventKind::Access(AccessKind::Open(AccessMode::Any)),
+                ".gitignore",
+            ),
+            f.event(
+                EventKind::Access(AccessKind::Close(AccessMode::Read)),
+                ".gitignore",
+            ),
+            f.event(EventKind::Create(CreateKind::File), "src/new.rs"),
+            f.event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                "src/new.rs",
+            ),
+            f.event(
+                EventKind::Access(AccessKind::Close(AccessMode::Write)),
+                "src/new.rs",
+            ),
+        ];
+        assert_eq!(f.classify(&events), [Change::Upsert(rel("src/new.rs"))]);
+    }
+
+    #[test]
+    fn writing_ignore_rules_rescans() {
+        let mut f = Fixture::new(&[(".gitignore", "*.log\n")]);
+        let events = [f.event(
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            ".gitignore",
+        )];
+        assert_eq!(f.classify(&events), [Change::Rescan]);
+    }
+
+    #[test]
+    fn ignored_and_state_paths_are_dropped() {
+        let mut f = Fixture::new(&[
+            (".gitignore", "*.log\n"),
+            ("app.log", "x"),
+            (".git/index", "x"),
+            ("src/a.rs", "x"),
+        ]);
+        let modify = EventKind::Modify(ModifyKind::Data(DataChange::Any));
+        let events = [
+            f.event(modify, "app.log"),
+            f.event(modify, ".git/index"),
+            f.event(modify, "src/a.rs"),
+        ];
+        assert_eq!(f.classify(&events), [Change::Upsert(rel("src/a.rs"))]);
+    }
+
+    #[test]
+    fn missing_paths_are_removed() {
+        let mut f = Fixture::new(&[]);
+        let events = [f.event(EventKind::Remove(RemoveKind::File), "src/gone.rs")];
+        assert_eq!(f.classify(&events), [Change::Remove(rel("src/gone.rs"))]);
+    }
+
+    #[test]
+    fn new_directory_rescans_but_modified_directory_does_not() {
+        let mut f = Fixture::new(&[("pkg/a.rs", "x")]);
+        let touched = [f.event(EventKind::Modify(ModifyKind::Any), "pkg")];
+        assert_eq!(f.classify(&touched), []);
+        let created = [f.event(EventKind::Create(CreateKind::Folder), "pkg")];
+        assert_eq!(f.classify(&created), [Change::Rescan]);
     }
 }
