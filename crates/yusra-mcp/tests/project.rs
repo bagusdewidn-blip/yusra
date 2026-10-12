@@ -55,7 +55,7 @@ fn code<T: std::fmt::Debug>(r: Result<T, YusraError>) -> ErrorCode {
     }
 }
 
-fn setup() -> (tempfile::TempDir, Project) {
+fn setup_unindexed() -> (tempfile::TempDir, Project) {
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
         Err(e) => panic!("{e}"),
@@ -74,6 +74,11 @@ fn setup() -> (tempfile::TempDir, Project) {
         ..Settings::default()
     };
     let project = ok(Project::open(root, settings));
+    (dir, project)
+}
+
+fn setup() -> (tempfile::TempDir, Project) {
+    let (dir, project) = setup_unindexed();
     ok(project.full_index());
     (dir, project)
 }
@@ -323,4 +328,44 @@ fn apply_changes_updates_index() {
     // File yang hilang sebelum sempat di-index dianggap terhapus.
     let stats = ok(project.apply_changes(&[Change::Upsert(rel("src/ghost.rs"))]));
     assert_eq!(stats.updated, 0);
+}
+
+#[test]
+fn wait_ready_blocks_until_initial_index() {
+    let (_dir, project) = setup_unindexed();
+    let project = std::sync::Arc::new(project);
+    let waiter = {
+        let project = std::sync::Arc::clone(&project);
+        std::thread::spawn(move || {
+            project.wait_ready()?;
+            project.search_symbols(&SearchSymbolsRequest {
+                query: "issue_token".to_owned(),
+                kind: None,
+                limit: None,
+            })
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "wait_ready harus memblok sebelum index"
+    );
+    ok(project.full_index());
+    let found = match waiter.join() {
+        Ok(r) => ok(r),
+        Err(_) => panic!("thread penunggu panic"),
+    };
+    assert_eq!(found.symbols.len(), 1, "{found:?}");
+}
+
+#[test]
+fn failed_initial_index_reaches_waiters() {
+    let (_dir, project) = setup_unindexed();
+    project.mark_index_failed("disk penuh");
+    assert_eq!(code(project.wait_ready()), ErrorCode::Internal);
+    // Index yang berhasil kemudian (misalnya rescan) memulihkan keadaan.
+    ok(project.full_index());
+    ok(project.wait_ready());
+    project.mark_index_failed("terlambat");
+    ok(project.wait_ready());
 }

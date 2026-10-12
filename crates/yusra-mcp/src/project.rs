@@ -7,7 +7,7 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    sync::{PoisonError, RwLock, RwLockReadGuard},
+    sync::{Condvar, Mutex, PoisonError, RwLock, RwLockReadGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -48,6 +48,14 @@ pub struct IndexStats {
     pub skipped: usize,
 }
 
+/// Keadaan index awal. Tool dan watcher menunggu sampai bukan `Pending`.
+#[derive(Debug)]
+enum Readiness {
+    Pending,
+    Ready,
+    Failed(String),
+}
+
 pub struct Project {
     root: PathBuf,
     settings: Settings,
@@ -56,6 +64,8 @@ pub struct Project {
     adapters: Vec<Box<dyn LanguageAdapter>>,
     estimator: Estimator,
     tags: RwLock<BTreeMap<RelPath, FileTags>>,
+    readiness: Mutex<Readiness>,
+    ready_changed: Condvar,
 }
 
 impl std::fmt::Debug for Project {
@@ -69,7 +79,8 @@ impl std::fmt::Debug for Project {
 
 impl Project {
     /// Buka proyek yang sudah di-`init` (direktori `.yusra/` harus ada).
-    /// Index belum dimuat; panggil [`Project::full_index`].
+    /// Index belum dimuat; panggil [`Project::full_index`]. Sampai itu
+    /// selesai, [`Project::wait_ready`] memblok.
     pub fn open(root: &Path, settings: Settings) -> Result<Self, YusraError> {
         let root = fs::canonicalize(root).map_err(|e| {
             YusraError::internal_with(format!("root tidak bisa dibuka: {}", root.display()), e)
@@ -87,10 +98,51 @@ impl Project {
             adapters: builtin_adapters()?,
             estimator: Estimator::new(),
             tags: RwLock::new(BTreeMap::new()),
+            readiness: Mutex::new(Readiness::Pending),
+            ready_changed: Condvar::new(),
             root,
             settings,
             store,
         })
+    }
+
+    fn set_readiness(&self, next: Readiness) {
+        *self
+            .readiness
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = next;
+        self.ready_changed.notify_all();
+    }
+
+    /// Tandai index awal gagal: semua yang menunggu [`Project::wait_ready`]
+    /// menerima error internal. Tidak berpengaruh jika index sudah siap.
+    pub fn mark_index_failed(&self, reason: &str) {
+        let mut state = self
+            .readiness
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if matches!(*state, Readiness::Pending) {
+            *state = Readiness::Failed(reason.to_owned());
+            self.ready_changed.notify_all();
+        }
+    }
+
+    /// Blok sampai [`Project::full_index`] pertama selesai.
+    pub fn wait_ready(&self) -> Result<(), YusraError> {
+        let state = self
+            .readiness
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let state = self
+            .ready_changed
+            .wait_while(state, |s| matches!(s, Readiness::Pending))
+            .unwrap_or_else(PoisonError::into_inner);
+        match &*state {
+            Readiness::Failed(reason) => {
+                Err(YusraError::internal(format!("index awal gagal: {reason}")))
+            }
+            Readiness::Pending | Readiness::Ready => Ok(()),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -153,6 +205,7 @@ impl Project {
         stats.removed = self.store.remove_files(&gone)?;
         stats.files = tags.len();
         *self.tags.write().unwrap_or_else(PoisonError::into_inner) = tags;
+        self.set_readiness(Readiness::Ready);
         Ok(stats)
     }
 

@@ -119,8 +119,8 @@ impl YusraServer {
 }
 
 impl YusraServer {
-    /// Jalankan `op` di thread blocking, tulis satu baris audit, dan ubah
-    /// error menjadi hasil tool `isError: true`.
+    /// Tunggu index awal, jalankan `op` di thread blocking, tulis satu baris
+    /// audit, dan ubah error menjadi hasil tool `isError: true`.
     async fn run<T, F>(&self, tool: &'static str, args: Value, op: F) -> ToolResult<T>
     where
         T: Send + 'static,
@@ -129,7 +129,7 @@ impl YusraServer {
         let project = Arc::clone(&self.project);
         let client_id = Arc::clone(&self.client_id);
         let joined = tokio::task::spawn_blocking(move || {
-            let out = op(&project);
+            let out = project.wait_ready().and_then(|()| op(&project));
             let outcome = match &out {
                 Ok(_) => "ok",
                 Err(e) => e.code().as_str(),

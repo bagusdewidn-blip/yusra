@@ -142,19 +142,43 @@ fn log_to_pipe_has_no_ansi_colors() {
         Err(e) => panic!("{e}"),
     };
     assert!(init.status.success());
-    // stdin kosong: index awal selesai lalu server berhenti karena EOF.
-    let out = match yusrad()
+    // Index awal berjalan di latar, jadi stdin dibiarkan terbuka sampai
+    // lognya muncul; menutup stdin lalu menghentikan server.
+    let mut child = match yusrad()
         .args(["up", "--stdio", "--root"])
         .arg(dir.path())
         .env("YUSRA_LOG", "info")
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
     {
-        Ok(o) => o,
+        Ok(c) => c,
         Err(e) => panic!("{e}"),
     };
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("index awal selesai"), "{stderr}");
+    let Some(err) = child.stderr.take() else {
+        panic!("stderr tidak tersedia");
+    };
+    let (tx, rx) = channel();
+    thread::spawn(move || {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut stderr = String::new();
+    while !stderr.contains("index awal selesai") {
+        match rx.recv_timeout(TIMEOUT) {
+            Ok(line) => {
+                stderr.push_str(&line);
+                stderr.push('\n');
+            }
+            Err(e) => panic!("log index awal tidak muncul ({e}): {stderr}"),
+        }
+    }
+    drop(child.stdin.take());
+    let _ = child.wait();
     assert!(
         !stderr.contains('\u{1b}'),
         "stderr berisi kode ANSI: {stderr:?}"
