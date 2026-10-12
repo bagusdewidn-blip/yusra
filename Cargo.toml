@@ -27,6 +27,7 @@ insta = "1.49"
 # rusqlite_migration 2.6 butuh Rust 1.95, di atas MSRV; 2.5 memakai rusqlite 0.39
 rusqlite = { version = "0.39", features = ["bundled"] }
 rusqlite_migration = "2.5"
+tiktoken-rs = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
