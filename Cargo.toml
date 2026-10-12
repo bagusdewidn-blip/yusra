@@ -24,6 +24,9 @@ notify = "8.2"
 notify-debouncer-full = "0.7"
 tempfile = "3"
 insta = "1.49"
+# rusqlite_migration 2.6 butuh Rust 1.95, di atas MSRV; 2.5 memakai rusqlite 0.39
+rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite_migration = "2.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
