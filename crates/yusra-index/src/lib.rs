@@ -13,6 +13,7 @@ mod filter;
 mod go;
 #[cfg(feature = "lang-python")]
 mod python;
+mod resolve;
 #[cfg(feature = "lang-rust")]
 mod rust;
 #[cfg(feature = "lang-typescript")]
@@ -26,6 +27,7 @@ pub use filter::PathFilter;
 pub use go::GoAdapter;
 #[cfg(feature = "lang-python")]
 pub use python::PythonAdapter;
+pub use resolve::{ImportGraph, ProjectLayout, resolve_imports};
 #[cfg(feature = "lang-rust")]
 pub use rust::RustAdapter;
 #[cfg(feature = "lang-typescript")]

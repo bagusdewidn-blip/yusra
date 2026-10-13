@@ -2,7 +2,7 @@ use tree_sitter::{Language, Node, Query, Tree};
 use yusra_core::{RelPath, Symbol, SymbolKind, Tag, YusraError};
 
 use crate::{
-    LanguageAdapter,
+    LanguageAdapter, ProjectLayout,
     common::{self, SymbolSink, named_children, signature_between, text},
 };
 
@@ -57,6 +57,10 @@ impl LanguageAdapter for PythonAdapter {
         let mut out = Vec::new();
         collect_imports(tree.root_node(), src, &mut out);
         out
+    }
+
+    fn resolve_import(&self, from: &RelPath, spec: &str, layout: &ProjectLayout) -> Vec<RelPath> {
+        crate::resolve::python::resolve(from, spec, layout)
     }
 
     fn tags(&self, path: &RelPath, tree: &Tree, src: &[u8]) -> Vec<Tag> {

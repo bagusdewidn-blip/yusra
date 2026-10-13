@@ -2,7 +2,7 @@ use tree_sitter::{Language, Node, Query, Tree};
 use yusra_core::{RelPath, Symbol, SymbolKind, Tag, YusraError};
 
 use crate::{
-    LanguageAdapter,
+    LanguageAdapter, ProjectLayout,
     common::{
         self, SymbolSink, attached_start, collapse_whitespace, named_children, signature_between,
         text,
@@ -78,6 +78,10 @@ impl LanguageAdapter for RustAdapter {
                 _ => text,
             })
             .collect()
+    }
+
+    fn resolve_import(&self, from: &RelPath, spec: &str, layout: &ProjectLayout) -> Vec<RelPath> {
+        crate::resolve::rust::resolve(from, spec, layout)
     }
 
     fn tags(&self, path: &RelPath, tree: &Tree, src: &[u8]) -> Vec<Tag> {

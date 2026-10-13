@@ -1,6 +1,8 @@
 use tree_sitter::{Language, Parser, Tree};
 use yusra_core::{RelPath, Symbol, Tag, YusraError};
 
+use crate::ProjectLayout;
+
 /// Pengetahuan per bahasa: grammar dan cara membaca simbol, impor, serta tag.
 ///
 /// Semua method menerima pohon yang sudah diparse dari `src` yang sama.
@@ -21,6 +23,10 @@ pub trait LanguageAdapter: Send + Sync {
 
     /// Spesifikasi impor mentah sesuai sintaks bahasa, belum diresolusi ke path.
     fn imports(&self, tree: &Tree, src: &[u8]) -> Vec<String>;
+
+    /// File proyek yang dirujuk satu spesifikasi dari [`LanguageAdapter::imports`]
+    /// milik `from`. Kosong untuk pustaka luar atau file yang tidak ditemukan.
+    fn resolve_import(&self, from: &RelPath, spec: &str, layout: &ProjectLayout) -> Vec<RelPath>;
 
     /// Bahan repo map. `Tag::Def::line` dimulai dari 1.
     fn tags(&self, path: &RelPath, tree: &Tree, src: &[u8]) -> Vec<Tag>;

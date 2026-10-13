@@ -2,7 +2,7 @@ use tree_sitter::{Language, Node, Query, Tree};
 use yusra_core::{RelPath, Symbol, SymbolKind, Tag, YusraError};
 
 use crate::{
-    LanguageAdapter,
+    LanguageAdapter, ProjectLayout,
     common::{self, SymbolSink, attached_start, named_children, signature_between, text},
 };
 
@@ -64,6 +64,10 @@ impl LanguageAdapter for GoAdapter {
             .into_iter()
             .map(|(_, path)| path.trim_matches(['"', '`']).to_owned())
             .collect()
+    }
+
+    fn resolve_import(&self, from: &RelPath, spec: &str, layout: &ProjectLayout) -> Vec<RelPath> {
+        crate::resolve::go::resolve(from, spec, layout)
     }
 
     fn tags(&self, path: &RelPath, tree: &Tree, src: &[u8]) -> Vec<Tag> {
