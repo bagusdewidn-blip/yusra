@@ -507,8 +507,15 @@ impl Project {
         })
     }
 
-    /// Awalan terpanjang `text` yang muat dalam `budget`, dipotong di akhir
-    /// baris; jika satu baris pun tidak muat, dipotong di batas karakter.
+    /// Awalan `text` yang muat dalam `budget`, dipotong di akhir baris; jika
+    /// satu baris pun tidak muat, dipotong di batas karakter.
+    ///
+    /// Token tiap baris dihitung sekali dan dijumlahkan sampai melewati
+    /// anggaran. Jumlah per baris hampir selalu >= hitungan eksak prefiksnya
+    /// (BPE kehilangan merge di batas baris), jadi titik potong itu lalu
+    /// cukup diverifikasi dengan satu hitungan eksak; bila verifikasi gagal,
+    /// dicari ulang dengan binary search. Hasilnya bisa beberapa baris lebih
+    /// pendek dari awalan terpanjang yang muat.
     fn fit_text<'t>(&self, text: &'t str, budget: u32) -> (&'t str, TokenCount) {
         let count = |s: &str| self.estimator.count(s, ModelFamily::Generic);
         let whole = count(text);
@@ -520,23 +527,38 @@ impl Project {
             .map(|(i, _)| i + 1)
             .chain(std::iter::once(text.len()))
             .collect();
-        let mut cut = largest_fitting(line_ends.len(), |k| {
-            count(&text[..line_ends[k - 1]]).tokens <= budget
-        })
-        .map_or(0, |k| line_ends[k - 1]);
+
+        let mut lines = 0;
+        let mut sum = 0u64;
+        let mut start = 0;
+        for &end in &line_ends {
+            sum += u64::from(count(&text[start..end]).tokens);
+            if sum > u64::from(budget) {
+                break;
+            }
+            lines += 1;
+            start = end;
+        }
+        let mut cut = if lines == 0 { 0 } else { line_ends[lines - 1] };
+        let mut tokens = count(&text[..cut]);
+        if tokens.tokens > budget {
+            cut = largest_fitting(lines, |k| count(&text[..line_ends[k - 1]]).tokens <= budget)
+                .map_or(0, |k| line_ends[k - 1]);
+            tokens = count(&text[..cut]);
+        }
         if cut == 0 {
             let first_line = line_ends.first().copied().unwrap_or(0);
             let chars: Vec<usize> = text[..first_line]
                 .char_indices()
                 .map(|(i, c)| i + c.len_utf8())
                 .collect();
-            cut = largest_fitting(chars.len(), |k| {
+            cut = largest_fitting_galloping(chars.len(), |k| {
                 count(&text[..chars[k - 1]]).tokens <= budget
             })
             .map_or(0, |k| chars[k - 1]);
+            tokens = count(&text[..cut]);
         }
-        let content = &text[..cut];
-        (content, count(content))
+        (&text[..cut], tokens)
     }
 
     pub fn read_symbol(&self, req: &ReadSymbolRequest) -> Result<ReadSymbolResponse, YusraError> {
@@ -635,6 +657,25 @@ fn tags_from_rows(path: RelPath, rows: &FileTagRows) -> FileTags {
     }
 }
 
+/// Seperti [`largest_fitting`], tetapi batas atas dicari dengan menggandakan
+/// k dari 1, sehingga `fits` hanya dipanggil untuk k paling banyak dua kali
+/// hasilnya. Cocok bila biaya `fits(k)` sebanding dengan k dan hasilnya jauh
+/// di bawah `n`.
+fn largest_fitting_galloping(n: usize, fits: impl Fn(usize) -> bool) -> Option<usize> {
+    let mut lo = 0;
+    let mut k = 1;
+    while k <= n && fits(k) {
+        lo = k;
+        k *= 2;
+    }
+    if lo == 0 {
+        return None;
+    }
+    let hi = (k - 1).min(n);
+    let rest = largest_fitting(hi - lo, |j| fits(lo + j)).unwrap_or(0);
+    Some(lo + rest)
+}
+
 /// k terbesar di `1..=n` dengan `fits(k)`, dengan asumsi `fits` monoton.
 fn largest_fitting(n: usize, fits: impl Fn(usize) -> bool) -> Option<usize> {
     let (mut lo, mut hi) = (0, n);
@@ -707,4 +748,38 @@ pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn largest_fitting_variants_agree() {
+        for n in [0, 1, 2, 3, 7, 8, 9, 100, 1000] {
+            for answer in [0, 1, 2, 5, 8, 63, 64, 65, 999, 1000] {
+                let fits = |k: usize| k <= answer;
+                let want = (answer.min(n) > 0).then(|| answer.min(n));
+                assert_eq!(largest_fitting(n, fits), want, "n={n} answer={answer}");
+                assert_eq!(
+                    largest_fitting_galloping(n, fits),
+                    want,
+                    "galloping n={n} answer={answer}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn galloping_never_probes_far_beyond_answer() {
+        let max_probe = Cell::new(0);
+        let fits = |k: usize| {
+            max_probe.set(max_probe.get().max(k));
+            k <= 100
+        };
+        assert_eq!(largest_fitting_galloping(1_000_000, fits), Some(100));
+        assert!(max_probe.get() <= 200, "{}", max_probe.get());
+    }
 }

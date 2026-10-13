@@ -492,3 +492,35 @@ fn unchanged_file_takes_tags_from_database() {
     let map = map_text(&again);
     assert!(map.contains("/* dari database */"), "{map}");
 }
+
+#[test]
+fn read_file_truncation_fills_budget_closely() {
+    let (dir, project) = setup();
+    let body: String = (0..3000)
+        .map(|i| format!("    let value_{i} = compute_{i}(input, {i});\n"))
+        .collect();
+    write(dir.path(), "src/long.rs", &body);
+    let one_line = "token ".repeat(20_000);
+    write(dir.path(), "src/one_line.txt", &one_line);
+
+    for (path, src) in [
+        ("src/long.rs", body.as_str()),
+        ("src/one_line.txt", &one_line),
+    ] {
+        let budget = 500;
+        let resp = ok(project.read_file(&ReadFileRequest {
+            max_tokens: Some(budget),
+            ..read(path)
+        }));
+        assert!(resp.truncated, "{path}");
+        assert!(src.starts_with(&resp.content), "{path}");
+        assert!(resp.tokens <= budget, "{path}: {} > {budget}", resp.tokens);
+        // Pemotongan per baris boleh sedikit kurang dari anggaran, tapi
+        // tidak boleh membuang sebagian besar anggaran.
+        assert!(
+            resp.tokens >= budget * 9 / 10,
+            "{path}: hanya {}",
+            resp.tokens
+        );
+    }
+}
