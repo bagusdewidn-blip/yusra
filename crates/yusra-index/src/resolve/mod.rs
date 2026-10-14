@@ -190,6 +190,29 @@ impl ImportGraph {
         graph
     }
 
+    /// Ganti sisi keluar `from` dengan `targets`, misalnya setelah isi satu
+    /// file berubah tanpa daftar file atau manifest ikut berubah. `targets`
+    /// kosong menghapus semua impor `from`.
+    pub fn set_imports(&mut self, from: &RelPath, targets: BTreeSet<RelPath>) {
+        for old in self.imports.remove(from).into_iter().flatten() {
+            if let Some(set) = self.importers.get_mut(&old) {
+                set.remove(from);
+                if set.is_empty() {
+                    self.importers.remove(&old);
+                }
+            }
+        }
+        for target in &targets {
+            self.importers
+                .entry(target.clone())
+                .or_default()
+                .insert(from.clone());
+        }
+        if !targets.is_empty() {
+            self.imports.insert(from.clone(), targets);
+        }
+    }
+
     /// File yang diimpor `path`, urut menurut path.
     pub fn imports_of(&self, path: &RelPath) -> impl Iterator<Item = &RelPath> {
         self.imports.get(path).into_iter().flatten()
@@ -311,6 +334,33 @@ mod tests {
         assert_eq!(join("", "x").as_deref(), Some("x"));
         assert_eq!(join("src", "..").as_deref(), Some(""));
         assert_eq!(join("src", "../.."), None);
+    }
+
+    #[test]
+    fn set_imports_replaces_edges_both_ways() {
+        let rel = |p: &str| match RelPath::parse(p) {
+            Ok(p) => p,
+            Err(e) => panic!("{e}"),
+        };
+        let (a, b, c) = (rel("a.rs"), rel("b.rs"), rel("c.rs"));
+        let mut graph = ImportGraph::default();
+        graph.set_imports(&a, [b.clone(), c.clone()].into());
+        graph.set_imports(&b, [c.clone()].into());
+        assert_eq!(
+            graph.importers_of(&c).collect::<Vec<_>>(),
+            [&a, &b],
+            "dua pengimpor"
+        );
+
+        graph.set_imports(&a, [b.clone()].into());
+        assert_eq!(graph.imports_of(&a).collect::<Vec<_>>(), [&b]);
+        assert_eq!(graph.importers_of(&c).collect::<Vec<_>>(), [&b]);
+        assert_eq!(graph.importers_of(&b).collect::<Vec<_>>(), [&a]);
+
+        graph.set_imports(&a, BTreeSet::new());
+        graph.set_imports(&b, BTreeSet::new());
+        assert_eq!(graph.edges().count(), 0);
+        assert!(graph.importers.is_empty(), "tanpa entri kosong tersisa");
     }
 
     #[test]
