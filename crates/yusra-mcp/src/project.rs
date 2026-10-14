@@ -3,20 +3,22 @@
 //! async lewat `spawn_blocking`.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File},
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    sync::{Condvar, Mutex, PoisonError, RwLock, RwLockReadGuard},
+    sync::{Condvar, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rayon::prelude::*;
+use rayon::{ThreadPool, prelude::*};
 use yusra_core::{
     Hash32, ModelFamily, RelPath, SymbolKind, SymbolPath, TokenCount, TokenEstimator, YusraError,
 };
 use yusra_index::{
-    Change, IndexedFile, LanguageAdapter, builtin_adapters, index_bytes, index_fingerprint, walk,
+    Change, ImportGraph, IndexedFile, LanguageAdapter, ProjectLayout, builtin_adapters,
+    index_bytes, index_fingerprint, resolve_imports, walk,
 };
 use yusra_store::{FileRecord, FileTagRows, Store, TagDef};
 use yusra_tokens::{DefLine, Estimator, FileTags, RepoMapRequest, repo_map};
@@ -54,10 +56,39 @@ pub struct IndexStats {
 
 /// Hasil membaca satu file saat indexing.
 enum Indexed {
-    /// Isi sama dengan yang tersimpan; tag diambil dari database tanpa parse.
-    Unchanged(FileTags),
+    /// Isi sama dengan yang tersimpan; tag dan impor diambil dari database
+    /// tanpa parse.
+    Unchanged(FileTags, Vec<String>),
     /// Baru atau berubah: hasil parse beserta tag dalam bentuk tersimpan.
     Fresh(IndexedFile, FileTags, FileTagRows),
+}
+
+/// Isi index tersimpan untuk satu file; bila hash-nya masih sama dengan disk,
+/// parse dilewati.
+#[derive(Clone, Copy)]
+struct Stored<'a> {
+    hash: &'a Hash32,
+    tags: &'a FileTagRows,
+    imports: &'a [String],
+}
+
+/// Satu file yang menunggu ditulis ke database.
+struct Pending {
+    file: IndexedFile,
+    rows: FileTagRows,
+    /// Hasil resolusi impor. Kosong saat indexing penuh karena graf impor
+    /// baru dibangun setelah semua file terbaca.
+    deps: Vec<RelPath>,
+}
+
+/// Data turunan index di memori: tag untuk repo map dan graf impor.
+#[derive(Debug, Default)]
+struct Cache {
+    tags: BTreeMap<RelPath, FileTags>,
+    /// Spesifikasi impor mentah per file terindeks.
+    imports: BTreeMap<RelPath, Vec<String>>,
+    layout: ProjectLayout,
+    graph: ImportGraph,
 }
 
 /// Keadaan index awal. Tool dan watcher menunggu sampai bukan `Pending`.
@@ -75,7 +106,7 @@ pub struct Project {
     store: Store,
     adapters: Vec<Box<dyn LanguageAdapter>>,
     estimator: Estimator,
-    tags: RwLock<BTreeMap<RelPath, FileTags>>,
+    cache: RwLock<Cache>,
     readiness: Mutex<Readiness>,
     ready_changed: Condvar,
 }
@@ -116,7 +147,7 @@ impl Project {
             policy: PathPolicy::new(&settings.deny_read)?,
             adapters: builtin_adapters()?,
             estimator: Estimator::new(),
-            tags: RwLock::new(BTreeMap::new()),
+            cache: RwLock::new(Cache::default()),
             readiness: Mutex::new(Readiness::Pending),
             ready_changed: Condvar::new(),
             root,
@@ -176,13 +207,18 @@ impl Project {
         &self.store
     }
 
-    fn tags(&self) -> RwLockReadGuard<'_, BTreeMap<RelPath, FileTags>> {
-        self.tags.read().unwrap_or_else(PoisonError::into_inner)
+    fn cache(&self) -> RwLockReadGuard<'_, Cache> {
+        self.cache.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn cache_mut(&self) -> RwLockWriteGuard<'_, Cache> {
+        self.cache.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Telusuri seluruh root, tulis file yang baru atau berubah ke database,
-    /// hapus yang hilang, dan bangun ulang cache tag. File yang hash-nya sama
-    /// dengan yang tersimpan tidak diparse; tagnya dimuat dari database.
+    /// hapus yang hilang, lalu bangun ulang cache tag dan graf impor (beserta
+    /// `file_deps`). File yang hash-nya sama dengan yang tersimpan tidak
+    /// diparse; tag dan impornya dimuat dari database.
     ///
     /// Baca dan parse berjalan paralel per batch di pool rayon milik
     /// pemanggilan ini (dilepas setelahnya agar daemon idle tanpa thread
@@ -191,18 +227,26 @@ impl Project {
         let listing = walk(&self.root, &self.settings.extra_ignore)?;
         let known = self.store.file_hashes()?;
         let stored = self.store.all_tags()?;
+        let stored_imports = self.store.all_imports()?;
         let mut stats = IndexStats {
             skipped: listing.skipped.len(),
             ..IndexStats::default()
         };
         let mut seen = HashSet::new();
         let mut tags = BTreeMap::new();
+        let mut imports = BTreeMap::new();
         let mut pending = Vec::new();
+        let stored_of = |path: &RelPath| {
+            let (hash, tags) = known.get(path).zip(stored.get(path))?;
+            let imports = stored_imports.get(path).map_or(&[][..], Vec::as_slice);
+            Some(Stored {
+                hash,
+                tags,
+                imports,
+            })
+        };
         let now = now_ms();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("index-{i}"))
-            .build()
-            .map_err(|e| YusraError::internal_with("pool thread index gagal dibuat", e))?;
+        let pool = index_pool()?;
 
         for batch in listing.files.chunks(WRITE_BATCH) {
             // `None` = cocok deny_read. Urutan hasil sama dengan `batch`.
@@ -211,8 +255,8 @@ impl Project {
                     .par_iter()
                     .map(|entry| {
                         let path = &entry.path;
-                        let prev = known.get(path).zip(stored.get(path));
-                        (!self.policy.is_denied(path)).then(|| self.index_one(path, prev))
+                        (!self.policy.is_denied(path))
+                            .then(|| self.index_one(path, stored_of(path)))
                     })
                     .collect()
             });
@@ -231,14 +275,20 @@ impl Project {
                     }
                 };
                 seen.insert(entry.path.clone());
-                let file_tags = match indexed {
-                    Indexed::Unchanged(file_tags) => file_tags,
+                let (file_tags, specs) = match indexed {
+                    Indexed::Unchanged(file_tags, specs) => (file_tags, specs),
                     Indexed::Fresh(file, file_tags, rows) => {
-                        pending.push((file, rows));
-                        file_tags
+                        let specs = specs_of(&file);
+                        pending.push(Pending {
+                            file,
+                            rows,
+                            deps: Vec::new(),
+                        });
+                        (file_tags, specs)
                     }
                 };
                 tags.insert(entry.path.clone(), file_tags);
+                imports.insert(entry.path.clone(), specs);
             }
             stats.updated += self.write_indexed(&pending, now)?;
             pending.clear();
@@ -247,33 +297,111 @@ impl Project {
         let gone: Vec<RelPath> = known.into_keys().filter(|p| !seen.contains(p)).collect();
         stats.removed = self.store.remove_files(&gone)?;
         stats.files = tags.len();
-        *self.tags.write().unwrap_or_else(PoisonError::into_inner) = tags;
+        let (layout, graph) = self.build_graph(&pool, &imports);
+        // File yang baru ditulis sudah kehilangan sisinya; sisanya dari
+        // putaran sebelumnya. Hanya selisihnya yang ditulis.
+        let stored_deps = self.store.all_deps()?;
+        let (removed, added) = diff_sorted(stored_deps.iter().map(|(a, b)| (a, b)), graph.edges());
+        self.store.update_deps(removed, added)?;
+        *self.cache_mut() = Cache {
+            tags,
+            imports,
+            layout,
+            graph,
+        };
         self.set_readiness(Readiness::Ready);
         Ok(stats)
     }
 
-    /// Terapkan satu batch dari watcher.
+    /// Layout proyek dari file terindeks (manifest dibaca dari disk) dan graf
+    /// impor hasil resolusi semua spesifikasi `imports`, paralel per file.
+    fn build_graph(
+        &self,
+        pool: &ThreadPool,
+        imports: &BTreeMap<RelPath, Vec<String>>,
+    ) -> (ProjectLayout, ImportGraph) {
+        let layout = ProjectLayout::new(imports.keys().cloned(), |path| {
+            let full = self.full_path(path);
+            let meta = fs::symlink_metadata(&full).ok()?;
+            if !meta.file_type().is_file() {
+                return None;
+            }
+            fs::read(&full).ok()
+        });
+        let resolved: Vec<_> = pool.install(|| {
+            imports
+                .par_iter()
+                .map(|(path, specs)| (path, resolve_imports(&self.adapters, &layout, path, specs)))
+                .collect()
+        });
+        let mut graph = ImportGraph::default();
+        for (path, targets) in resolved {
+            graph.set_imports(path, targets);
+        }
+        (layout, graph)
+    }
+
+    /// Bangun ulang layout dan graf impor dari spesifikasi di cache, lalu
+    /// tulis selisih sisinya ke `file_deps`. Dipanggil setelah daftar file
+    /// atau manifest berubah, karena itu bisa mengubah resolusi impor file
+    /// lain.
+    fn rebuild_graph(&self) -> Result<(), YusraError> {
+        let pool = index_pool()?;
+        let (layout, graph) = self.build_graph(&pool, &self.cache().imports);
+        {
+            // Graf di cache sama dengan isi `file_deps`: sisi dari file yang
+            // dihapus sudah ikut terhapus bersama barisnya di `files`.
+            let cache = self.cache();
+            let (removed, added) = diff_sorted(cache.graph.edges(), graph.edges());
+            self.store.update_deps(removed, added)?;
+        }
+        let mut cache = self.cache_mut();
+        cache.layout = layout;
+        cache.graph = graph;
+        Ok(())
+    }
+
+    /// Terapkan satu batch dari watcher. Perubahan isi file hanya
+    /// meresolusi ulang impor file itu; file baru, file yang hilang, atau
+    /// manifest yang berubah membangun ulang seluruh graf impor sekali di
+    /// akhir batch.
     pub fn apply_changes(&self, changes: &[Change]) -> Result<IndexStats, YusraError> {
         if changes.iter().any(|c| matches!(c, Change::Rescan)) {
             return self.full_index();
         }
         let mut stats = IndexStats::default();
+        let mut layout_changed = false;
         let now = now_ms();
         for change in changes {
             match change {
                 Change::Upsert(path) if !self.policy.is_denied(path) => {
                     match self.index_one(path, None) {
                         Ok(Indexed::Fresh(file, file_tags, rows)) => {
-                            stats.updated += self.write_indexed(&[(file, rows)], now)?;
-                            self.tags
-                                .write()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .insert(path.clone(), file_tags);
+                            let specs = specs_of(&file);
+                            let (is_new, targets) = {
+                                let cache = self.cache();
+                                let targets =
+                                    resolve_imports(&self.adapters, &cache.layout, path, &specs);
+                                (!cache.tags.contains_key(path), targets)
+                            };
+                            layout_changed |= is_new || ProjectLayout::is_manifest(path);
+                            let pending = Pending {
+                                file,
+                                rows,
+                                deps: targets.iter().cloned().collect(),
+                            };
+                            stats.updated += self.write_indexed(&[pending], now)?;
+                            let mut cache = self.cache_mut();
+                            cache.tags.insert(path.clone(), file_tags);
+                            cache.imports.insert(path.clone(), specs);
+                            cache.graph.set_imports(path, targets);
                         }
                         // Tanpa `prev`, hasilnya selalu `Fresh`.
-                        Ok(Indexed::Unchanged(_)) => {}
+                        Ok(Indexed::Unchanged(..)) => {}
                         Err(YusraError::NotFound { .. }) => {
-                            stats.removed += self.remove_tree(path)?
+                            let removed = self.remove_tree(path)?;
+                            layout_changed |= removed > 0;
+                            stats.removed += removed;
                         }
                         Err(e) => {
                             tracing::warn!(%path, error = %e, "file dilewati");
@@ -283,48 +411,56 @@ impl Project {
                 }
                 // File yang kini cocok deny_read keluar dari index.
                 Change::Upsert(path) | Change::Remove(path) => {
-                    stats.removed += self.remove_tree(path)?;
+                    let removed = self.remove_tree(path)?;
+                    layout_changed |= removed > 0;
+                    stats.removed += removed;
                 }
                 Change::Rescan => {}
             }
         }
-        stats.files = self.tags().len();
+        if layout_changed {
+            self.rebuild_graph()?;
+        }
+        stats.files = self.cache().tags.len();
         Ok(stats)
     }
 
-    /// Hapus `path` dan semua file di bawahnya dari index.
+    /// Hapus `path` dan semua file di bawahnya dari index. Graf impor tidak
+    /// dibangun ulang di sini; pemanggil memanggil [`Project::rebuild_graph`].
     fn remove_tree(&self, path: &RelPath) -> Result<usize, YusraError> {
         let prefix = format!("{path}/");
-        let mut tags = self.tags.write().unwrap_or_else(PoisonError::into_inner);
-        let doomed: Vec<RelPath> = tags
+        let mut cache = self.cache_mut();
+        let doomed: Vec<RelPath> = cache
+            .tags
             .keys()
             .filter(|p| *p == path || p.as_str().starts_with(&prefix))
             .cloned()
             .collect();
         for p in &doomed {
-            tags.remove(p);
+            cache.tags.remove(p);
+            cache.imports.remove(p);
+            cache.graph.set_imports(p, BTreeSet::new());
         }
-        drop(tags);
+        drop(cache);
         self.store.remove_files(&doomed)
     }
 
-    /// Baca dan index satu file. `prev` = hash dan tag yang tersimpan; jika
-    /// isi file masih sama, parse dilewati.
-    fn index_one(
-        &self,
-        path: &RelPath,
-        prev: Option<(&Hash32, &FileTagRows)>,
-    ) -> Result<Indexed, YusraError> {
+    /// Baca dan index satu file. Jika isinya masih sama dengan `prev`, parse
+    /// dilewati.
+    fn index_one(&self, path: &RelPath, prev: Option<Stored<'_>>) -> Result<Indexed, YusraError> {
         let full = self.full_path(path);
         let meta = fs::symlink_metadata(&full).map_err(|e| io_error(e, path))?;
         if !meta.file_type().is_file() {
             return Err(not_found("file", path.as_str()));
         }
         let bytes = fs::read(&full).map_err(|e| io_error(e, path))?;
-        if let Some((hash, rows)) = prev
-            && hash_bytes(&bytes) == *hash
+        if let Some(prev) = prev
+            && hash_bytes(&bytes) == *prev.hash
         {
-            return Ok(Indexed::Unchanged(tags_from_rows(path.clone(), rows)));
+            return Ok(Indexed::Unchanged(
+                tags_from_rows(path.clone(), prev.tags),
+                prev.imports.to_vec(),
+            ));
         }
         let indexed = index_bytes(path, &bytes, &self.adapters, self.settings.max_file_bytes)?;
         let tags = indexed.parsed.as_ref().map_or(&[][..], |p| &p.tags[..]);
@@ -333,26 +469,21 @@ impl Project {
         Ok(Indexed::Fresh(indexed, file_tags, rows))
     }
 
-    fn write_indexed(
-        &self,
-        files: &[(IndexedFile, FileTagRows)],
-        now: i64,
-    ) -> Result<usize, YusraError> {
+    fn write_indexed(&self, files: &[Pending], now: i64) -> Result<usize, YusraError> {
         if files.is_empty() {
             return Ok(0);
         }
         let records: Vec<FileRecord<'_>> = files
             .iter()
-            .map(|(f, tags)| FileRecord {
-                path: &f.path,
-                hash: f.hash,
-                language: f.language,
+            .map(|p| FileRecord {
+                path: &p.file.path,
+                hash: p.file.hash,
+                language: p.file.language,
                 indexed_at: now,
-                symbols: f.parsed.as_ref().map_or(&[], |p| &p.symbols),
-                // Resolusi import ke path belum ada; `read_file` memakai
-                // rujukan tag untuk konteks dependensi.
-                deps: &[],
-                tags,
+                symbols: p.file.parsed.as_ref().map_or(&[], |f| &f.symbols),
+                imports: p.file.parsed.as_ref().map_or(&[], |f| &f.imports),
+                deps: &p.deps,
+                tags: &p.rows,
             })
             .collect();
         self.store.replace_files(&records)?;
@@ -433,9 +564,9 @@ impl Project {
             .iter()
             .map(|p| RelPath::parse(p))
             .collect::<Result<Vec<_>, _>>()?;
-        let tags = self.tags();
+        let cache = self.cache();
         let map = repo_map(
-            tags.values(),
+            cache.tags.values(),
             &RepoMapRequest {
                 focus_paths: &focus,
                 mention_idents: &req.mention_idents,
@@ -480,17 +611,25 @@ impl Project {
             .saturating_sub(content_tokens.tokens)
             .min(self.settings.repo_map_budget);
         if req.with_deps && deps_budget > 0 {
-            let tags = self.tags();
-            let map = repo_map(
-                tags.values(),
-                &RepoMapRequest {
-                    focus_paths: std::slice::from_ref(&rel),
-                    mention_idents: &[],
-                    budget: deps_budget,
-                    family: ModelFamily::Generic,
-                },
-                &self.estimator,
-            );
+            let cache = self.cache();
+            let request = RepoMapRequest {
+                focus_paths: std::slice::from_ref(&rel),
+                mention_idents: &[],
+                budget: deps_budget,
+                family: ModelFamily::Generic,
+            };
+            // Definisi dari file yang diimpor; tanpa impor yang teresolusi
+            // (bahasa tanpa adapter, atau hanya pustaka luar) seluruh proyek
+            // dipakai, dengan file ini sebagai fokus.
+            let mut imported = cache.graph.imports_of(&rel).peekable();
+            let map = if imported.peek().is_some() {
+                let files = std::iter::once(&rel)
+                    .chain(imported)
+                    .filter_map(|p| cache.tags.get(p));
+                repo_map(files, &request, &self.estimator)
+            } else {
+                repo_map(cache.tags.values(), &request, &self.estimator)
+            };
             if !map.text.is_empty() {
                 tokens = tokens + map.tokens;
                 deps_context = Some(map.text);
@@ -613,6 +752,47 @@ impl Project {
             approximate: total.approximate,
         })
     }
+}
+
+/// Pool rayon untuk satu putaran kerja index; dilepas setelahnya agar daemon
+/// idle tanpa thread tambahan.
+fn index_pool() -> Result<ThreadPool, YusraError> {
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("index-{i}"))
+        .build()
+        .map_err(|e| YusraError::internal_with("pool thread index gagal dibuat", e))
+}
+
+/// Elemen yang hanya ada di `old` dan yang hanya ada di `new`. Keduanya harus
+/// urut naik tanpa duplikat.
+fn diff_sorted<T: Ord + Copy>(
+    old: impl IntoIterator<Item = T>,
+    new: impl IntoIterator<Item = T>,
+) -> (Vec<T>, Vec<T>) {
+    let (mut old, mut new) = (old.into_iter().peekable(), new.into_iter().peekable());
+    let (mut removed, mut added) = (Vec::new(), Vec::new());
+    loop {
+        match (old.peek(), new.peek()) {
+            (Some(o), Some(n)) => match o.cmp(n) {
+                Ordering::Less => removed.extend(old.next()),
+                Ordering::Greater => added.extend(new.next()),
+                Ordering::Equal => {
+                    old.next();
+                    new.next();
+                }
+            },
+            (Some(_), None) => removed.extend(old.next()),
+            (None, Some(_)) => added.extend(new.next()),
+            (None, None) => return (removed, added),
+        }
+    }
+}
+
+/// Spesifikasi impor mentah hasil parse; kosong bila file tidak diparse.
+fn specs_of(file: &IndexedFile) -> Vec<String> {
+    file.parsed
+        .as_ref()
+        .map_or_else(Vec::new, |p| p.imports.clone())
 }
 
 /// Bentuk tersimpan [`FileTags`]: rujukan diringkas menjadi jumlah per nama.
@@ -770,6 +950,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn diff_sorted_splits_removed_and_added() {
+        assert_eq!(
+            diff_sorted([1, 2, 4, 7], [2, 3, 4, 8, 9]),
+            (vec![1, 7], vec![3, 8, 9])
+        );
+        assert_eq!(diff_sorted([1, 2], []), (vec![1, 2], vec![]));
+        assert_eq!(diff_sorted([], [5]), (vec![], vec![5]));
+        assert_eq!(diff_sorted([1, 2], [1, 2]), (vec![], vec![]));
     }
 
     #[test]

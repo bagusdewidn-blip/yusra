@@ -11,6 +11,7 @@ use yusra_core::YusraError;
 const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/0001_init.sql")),
     M::up(include_str!("../migrations/0002_tags.sql")),
+    M::up(include_str!("../migrations/0003_imports.sql")),
 ];
 
 /// Lama menunggu lock SQLite dari proses atau koneksi lain sebelum menyerah.
@@ -211,6 +212,7 @@ mod tests {
             "checkpoints",
             "edits",
             "file_deps",
+            "file_imports",
             "files",
             "index_meta",
             "locks",
@@ -261,6 +263,39 @@ mod tests {
         let store = ok(Store::open(&path));
         assert_eq!(ok(store.schema_version()), MIGRATIONS.len() as u32);
         assert!(ok(store.file_hashes()).is_empty());
+    }
+
+    #[test]
+    fn upgrade_from_0002_drops_index_without_imports() {
+        let dir = match tempfile::tempdir() {
+            Ok(d) => d,
+            Err(e) => panic!("{e}"),
+        };
+        let path = dir.path().join("state.db");
+        {
+            let mut conn = match Connection::open(&path) {
+                Ok(c) => c,
+                Err(e) => panic!("{e}"),
+            };
+            if let Err(e) = migrations().to_version(&mut conn, 2) {
+                panic!("{e}");
+            }
+            if let Err(e) = conn.execute_batch(
+                "INSERT INTO files (path, blake3, language, indexed_at)
+                   VALUES ('src/a.rs', zeroblob(32), 'rust', 0);
+                 INSERT INTO tag_defs (path, seq, name, line, text)
+                   VALUES ('src/a.rs', 0, 'f', 1, 'fn f()');
+                 INSERT INTO index_meta (key, value) VALUES ('indexer', 'v1');",
+            ) {
+                panic!("{e}");
+            }
+        }
+        let store = ok(Store::open(&path));
+        assert_eq!(ok(store.schema_version()), MIGRATIONS.len() as u32);
+        assert!(ok(store.file_hashes()).is_empty());
+        assert!(ok(store.all_tags()).is_empty());
+        // Identitas indexer tetap; index kosong dibangun ulang dari disk.
+        assert_eq!(ok(store.index_fingerprint()).as_deref(), Some("v1"));
     }
 
     #[test]

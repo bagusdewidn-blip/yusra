@@ -482,6 +482,7 @@ fn unchanged_file_takes_tags_from_database() {
         language: Some("rust"),
         indexed_at: 0,
         symbols: &[],
+        imports: &[],
         deps: &[],
         tags: &tags,
     }));
@@ -523,4 +524,153 @@ fn read_file_truncation_fills_budget_closely() {
             resp.tokens
         );
     }
+}
+
+/// Crate Rust kecil dengan `Cargo.toml` agar impor `crate::` teresolusi.
+fn setup_crate() -> (tempfile::TempDir, Project) {
+    let (dir, project) = setup_unindexed();
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    );
+    write(root, "src/lib.rs", "mod auth;\nmod other;\nmod token;\n");
+    write(
+        root,
+        "src/auth.rs",
+        "use crate::token::issue_token;\n\npub fn login() -> String {\n    \
+         crate::other::other_helper();\n    issue_token(1)\n}\n",
+    );
+    write(root, "src/other.rs", "pub fn other_helper() {}\n");
+    ok(project.full_index());
+    (dir, project)
+}
+
+fn rel(p: &str) -> RelPath {
+    match RelPath::parse(p) {
+        Ok(p) => p,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+fn deps_of(project: &Project, path: &str) -> Vec<String> {
+    ok(project.store().deps_of(&rel(path)))
+        .into_iter()
+        .map(|p| p.to_string())
+        .collect()
+}
+
+fn deps_context(project: &Project, path: &str) -> String {
+    ok(project.read_file(&ReadFileRequest {
+        with_deps: true,
+        ..read(path)
+    }))
+    .deps_context
+    .unwrap_or_default()
+}
+
+#[test]
+fn import_graph_fills_file_deps_and_limits_deps_context() {
+    let (_dir, project) = setup_crate();
+    assert_eq!(deps_of(&project, "src/auth.rs"), ["src/token.rs"]);
+    assert_eq!(
+        deps_of(&project, "src/lib.rs"),
+        ["src/auth.rs", "src/other.rs", "src/token.rs"]
+    );
+
+    // Hanya file yang diimpor; other.rs dirujuk lewat path penuh, bukan `use`.
+    let ctx = deps_context(&project, "src/auth.rs");
+    assert!(ctx.contains("pub fn issue_token"), "{ctx}");
+    assert!(!ctx.contains("other_helper"), "{ctx}");
+
+    // Tanpa impor yang teresolusi, seluruh proyek dipakai.
+    let ctx = deps_context(&project, "src/other.rs");
+    assert!(deps_of(&project, "src/other.rs").is_empty());
+    assert!(
+        !ctx.contains("src/other.rs:"),
+        "file sendiri tidak ikut: {ctx}"
+    );
+}
+
+#[test]
+fn watcher_changes_update_import_graph() {
+    let (dir, project) = setup_crate();
+    let root = dir.path();
+
+    // Isi berubah: hanya impor file itu yang diresolusi ulang.
+    write(
+        root,
+        "src/auth.rs",
+        "use crate::other::other_helper;\n\npub fn login() { other_helper() }\n",
+    );
+    ok(project.apply_changes(&[Change::Upsert(rel("src/auth.rs"))]));
+    assert_eq!(deps_of(&project, "src/auth.rs"), ["src/other.rs"]);
+    let ctx = deps_context(&project, "src/auth.rs");
+    assert!(ctx.contains("pub fn other_helper"), "{ctx}");
+    assert!(!ctx.contains("issue_token"), "{ctx}");
+
+    // Selama src/late.rs belum ada, `crate::late` bisa saja item di crate
+    // root; setelah file itu dibuat, impor file lain diresolusi ulang.
+    write(
+        root,
+        "src/auth.rs",
+        "use crate::late::late_fn;\n\npub fn login() { late_fn() }\n",
+    );
+    ok(project.apply_changes(&[Change::Upsert(rel("src/auth.rs"))]));
+    assert_eq!(deps_of(&project, "src/auth.rs"), ["src/lib.rs"]);
+    write(root, "src/late.rs", "pub fn late_fn() {}\n");
+    ok(project.apply_changes(&[Change::Upsert(rel("src/late.rs"))]));
+    assert_eq!(deps_of(&project, "src/auth.rs"), ["src/late.rs"]);
+
+    // File yang dihapus hilang dari sisi file lain.
+    if let Err(e) = fs::remove_file(root.join("src/late.rs")) {
+        panic!("{e}");
+    }
+    ok(project.apply_changes(&[Change::Remove(rel("src/late.rs"))]));
+    assert_eq!(deps_of(&project, "src/auth.rs"), ["src/lib.rs"]);
+}
+
+#[test]
+fn manifest_change_reresolves_other_crates() {
+    let (dir, project) = setup_crate();
+    let root = dir.path();
+    write(
+        root,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        root,
+        "app/src/main.rs",
+        "use renamed::token::issue_token;\nfn main() { issue_token(1); }\n",
+    );
+    ok(project.apply_changes(&[
+        Change::Upsert(rel("app/Cargo.toml")),
+        Change::Upsert(rel("app/src/main.rs")),
+    ]));
+    assert!(deps_of(&project, "app/src/main.rs").is_empty());
+
+    // Nama library baru di manifest membuat impor crate lain teresolusi
+    // tanpa main.rs berubah.
+    write(
+        root,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"renamed\"\n",
+    );
+    ok(project.apply_changes(&[Change::Upsert(rel("Cargo.toml"))]));
+    assert_eq!(deps_of(&project, "app/src/main.rs"), ["src/token.rs"]);
+}
+
+#[test]
+fn reopen_restores_import_graph_without_reparse() {
+    let (dir, project) = setup_crate();
+    let before = deps_context(&project, "src/auth.rs");
+    drop(project);
+
+    let again = ok(Project::open(dir.path(), test_settings()));
+    let stats = ok(again.full_index());
+    assert_eq!(stats.updated, 0, "{stats:?}");
+    assert_eq!(deps_of(&again, "src/auth.rs"), ["src/token.rs"]);
+    assert_eq!(deps_context(&again, "src/auth.rs"), before);
 }

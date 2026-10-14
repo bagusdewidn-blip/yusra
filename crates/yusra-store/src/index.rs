@@ -1,5 +1,5 @@
-//! Tabel index: `files`, `symbols`, `file_deps`, `tag_defs`, `tag_refs`,
-//! dan identitas indexer di `index_meta`.
+//! Tabel index: `files`, `symbols`, `file_imports`, `file_deps`,
+//! `tag_defs`, `tag_refs`, dan identitas indexer di `index_meta`.
 
 use std::{collections::HashMap, ops::Range};
 
@@ -30,8 +30,8 @@ pub struct FileTagRows {
     pub refs: Vec<(String, u32)>,
 }
 
-/// Satu file hasil indexing, siap disimpan. Simbol, dependensi, dan tag lama
-/// file yang sama diganti seluruhnya.
+/// Satu file hasil indexing, siap disimpan. Simbol, impor, dependensi, dan
+/// tag lama file yang sama diganti seluruhnya.
 #[derive(Clone, Copy, Debug)]
 pub struct FileRecord<'a> {
     pub path: &'a RelPath,
@@ -42,6 +42,8 @@ pub struct FileRecord<'a> {
     pub indexed_at: i64,
     /// Semua harus ber-`path` sama dengan `path` di atas.
     pub symbols: &'a [Symbol],
+    /// Spesifikasi impor mentah dari adapter, dalam urutan sumber.
+    pub imports: &'a [String],
     /// File lain yang diimpor file ini. Tidak harus sudah terindeks.
     pub deps: &'a [RelPath],
     pub tags: &'a FileTagRows,
@@ -88,6 +90,12 @@ impl Store {
             let mut insert_ref = tx
                 .prepare_cached("INSERT INTO tag_refs (path, name, count) VALUES (?1, ?2, ?3)")
                 .map_err(db_err("gagal menyiapkan kueri tag_refs"))?;
+            let mut clear_imports = tx
+                .prepare_cached("DELETE FROM file_imports WHERE path = ?1")
+                .map_err(db_err("gagal menyiapkan kueri file_imports"))?;
+            let mut insert_import = tx
+                .prepare_cached("INSERT INTO file_imports (path, seq, spec) VALUES (?1, ?2, ?3)")
+                .map_err(db_err("gagal menyiapkan kueri file_imports"))?;
             let mut insert_dep = tx
                 .prepare_cached(
                     "INSERT OR IGNORE INTO file_deps (from_path, to_path) VALUES (?1, ?2)",
@@ -129,6 +137,14 @@ impl Store {
                             sym.body_hash.as_bytes(),
                         ])
                         .map_err(db_err("gagal menyimpan simbol"))?;
+                }
+                clear_imports
+                    .execute([path])
+                    .map_err(db_err("gagal menghapus impor lama"))?;
+                for (seq, spec) in rec.imports.iter().enumerate() {
+                    insert_import
+                        .execute(params![path, seq as i64, spec])
+                        .map_err(db_err("gagal menyimpan impor"))?;
                 }
                 for dep in rec.deps {
                     insert_dep
@@ -217,6 +233,77 @@ impl Store {
         Ok(out)
     }
 
+    /// Spesifikasi impor semua file terindeks, dalam urutan sumber. Seperti
+    /// [`Store::all_tags`], setiap file punya entri, juga yang tanpa impor.
+    pub fn all_imports(&self) -> Result<HashMap<RelPath, Vec<String>>, YusraError> {
+        let (files, specs): (Vec<String>, Vec<(String, String)>) = self.read(|c| {
+            let files = c
+                .prepare("SELECT path FROM files")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            let specs = c
+                .prepare("SELECT path, spec FROM file_imports ORDER BY path, seq")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((files, specs))
+        })?;
+        let mut out = HashMap::with_capacity(files.len());
+        for p in files {
+            out.insert(rel_path_from_db(&p)?, Vec::new());
+        }
+        for (p, spec) in specs {
+            if let Some(list) = out.get_mut(&rel_path_from_db(&p)?) {
+                list.push(spec);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Semua sisi `file_deps` (pengimpor, yang diimpor), urut.
+    pub fn all_deps(&self) -> Result<Vec<(RelPath, RelPath)>, YusraError> {
+        let rows: Vec<(String, String)> = self.read(|c| {
+            c.prepare("SELECT from_path, to_path FROM file_deps")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })?;
+        let mut out = rows
+            .iter()
+            .map(|(from, to)| Ok((rel_path_from_db(from)?, rel_path_from_db(to)?)))
+            .collect::<Result<Vec<_>, YusraError>>()?;
+        out.sort_unstable();
+        Ok(out)
+    }
+
+    /// Hapus sisi `removed` lalu tambahkan sisi `added` di `file_deps`, dalam
+    /// satu transaksi. Pengimpor di `added` harus sudah terindeks.
+    pub fn update_deps<'a>(
+        &self,
+        removed: impl IntoIterator<Item = (&'a RelPath, &'a RelPath)>,
+        added: impl IntoIterator<Item = (&'a RelPath, &'a RelPath)>,
+    ) -> Result<(), YusraError> {
+        self.write(|tx| {
+            let mut delete = tx
+                .prepare_cached("DELETE FROM file_deps WHERE from_path = ?1 AND to_path = ?2")
+                .map_err(db_err("gagal menyiapkan kueri file_deps"))?;
+            let mut insert = tx
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO file_deps (from_path, to_path) VALUES (?1, ?2)",
+                )
+                .map_err(db_err("gagal menyiapkan kueri file_deps"))?;
+            for (from, to) in removed {
+                delete
+                    .execute([from.as_str(), to.as_str()])
+                    .map_err(db_err("gagal menghapus dependensi"))?;
+            }
+            for (from, to) in added {
+                insert
+                    .execute([from.as_str(), to.as_str()])
+                    .map_err(db_err("gagal menyimpan dependensi"))?;
+            }
+            Ok(())
+        })
+    }
+
     /// Identitas indexer yang menghasilkan index tersimpan, `None` jika belum
     /// pernah diatur.
     pub fn index_fingerprint(&self) -> Result<Option<String>, YusraError> {
@@ -230,11 +317,18 @@ impl Store {
         })
     }
 
-    /// Kosongkan seluruh index (file, simbol, dependensi, tag) dan catat
-    /// `fingerprint` sebagai identitas indexer baru, dalam satu transaksi.
+    /// Kosongkan seluruh index (file, simbol, impor, dependensi, tag) dan
+    /// catat `fingerprint` sebagai identitas indexer baru, dalam satu transaksi.
     pub fn reset_index(&self, fingerprint: &str) -> Result<(), YusraError> {
         self.write(|tx| {
-            for table in ["tag_refs", "tag_defs", "file_deps", "symbols", "files"] {
+            for table in [
+                "tag_refs",
+                "tag_defs",
+                "file_deps",
+                "file_imports",
+                "symbols",
+                "files",
+            ] {
                 tx.execute(&format!("DELETE FROM {table}"), [])
                     .map_err(db_err("gagal mengosongkan index"))?;
             }
@@ -449,6 +543,7 @@ mod tests {
             language: Some("rust"),
             indexed_at: 1_700_000_000_000,
             symbols,
+            imports: &[],
             deps,
             tags: &NO_TAGS,
         }
@@ -518,6 +613,69 @@ mod tests {
     }
 
     #[test]
+    fn imports_round_trip_replace_and_cascade() {
+        let (_dir, store) = temp_store();
+        let a = rel("src/a.rs");
+        let b = rel("src/b.rs");
+        let specs_a = ["crate::z".to_owned(), "crate::b".to_owned()];
+        ok(store.replace_files(&[
+            FileRecord {
+                imports: &specs_a,
+                ..record(&a, 1, &[], &[])
+            },
+            record(&b, 2, &[], &[]),
+        ]));
+        let all = ok(store.all_imports());
+        assert_eq!(all.len(), 2);
+        // Urutan sumber, bukan urutan abjad.
+        assert_eq!(all.get(&a).map(Vec::as_slice), Some(&specs_a[..]));
+        assert_eq!(all.get(&b).map(Vec::as_slice), Some(&[][..]));
+
+        let specs_a2 = ["crate::c".to_owned()];
+        ok(store.replace_file(&FileRecord {
+            imports: &specs_a2,
+            ..record(&a, 3, &[], &[])
+        }));
+        assert_eq!(
+            ok(store.all_imports()).get(&a).map(Vec::as_slice),
+            Some(&specs_a2[..])
+        );
+
+        ok(store.remove_files(std::slice::from_ref(&a)));
+        let left: i64 = match store
+            .read(|c| c.query_row("SELECT count(*) FROM file_imports", [], |r| r.get(0)))
+        {
+            Ok(n) => n,
+            Err(e) => panic!("{e}"),
+        };
+        assert_eq!(left, 0, "impor ikut terhapus bersama file");
+    }
+
+    #[test]
+    fn update_deps_removes_then_adds() {
+        let (_dir, store) = temp_store();
+        let a = rel("a.rs");
+        let b = rel("b.rs");
+        let c = rel("c.rs");
+        ok(store.replace_files(&[
+            record(&b, 2, &[], std::slice::from_ref(&c)),
+            record(&a, 1, &[], std::slice::from_ref(&c)),
+        ]));
+        assert_eq!(
+            ok(store.all_deps()),
+            [(a.clone(), c.clone()), (b.clone(), c.clone())]
+        );
+
+        ok(store.update_deps([(&a, &c)], [(&a, &b), (&b, &a), (&b, &c)]));
+        assert_eq!(ok(store.deps_of(&a)), std::slice::from_ref(&b));
+        assert_eq!(ok(store.deps_of(&b)), [a.clone(), c.clone()]);
+
+        // Sisi yang tidak ada diabaikan.
+        ok(store.update_deps([(&a, &b), (&b, &a), (&c, &a)], []));
+        assert_eq!(ok(store.all_deps()), [(b.clone(), c.clone())]);
+    }
+
+    #[test]
     fn reset_index_clears_everything_and_records_fingerprint() {
         let (_dir, store) = temp_store();
         assert_eq!(ok(store.index_fingerprint()), None);
@@ -527,12 +685,15 @@ mod tests {
             defs: vec![def("f", 1)],
             refs: vec![("g".to_owned(), 1)],
         };
+        let specs = ["crate::g".to_owned()];
         ok(store.replace_file(&FileRecord {
             tags: &tags,
+            imports: &specs,
             ..record(&a, 1, &syms, std::slice::from_ref(&a))
         }));
 
         ok(store.reset_index("v1"));
+        assert!(ok(store.all_imports()).is_empty());
         assert_eq!(ok(store.index_fingerprint()).as_deref(), Some("v1"));
         assert!(ok(store.file_hashes()).is_empty());
         assert!(ok(store.all_tags()).is_empty());

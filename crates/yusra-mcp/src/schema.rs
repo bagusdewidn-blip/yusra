@@ -92,9 +92,11 @@ pub struct ReadFileRequest {
     pub path: String,
     /// Baca versi di dalam session. Belum ada session di versi ini.
     pub session_id: Option<String>,
-    /// Sertakan signature definisi dari file lain yang dirujuk file ini.
-    /// Seperempat `max_tokens` (paling banyak `tokens.repo_map_budget`)
-    /// dicadangkan untuknya bila isi file tidak muat seluruhnya.
+    /// Sertakan signature definisi dari file yang diimpor file ini dan
+    /// dirujuknya. Bila tidak ada impor ke file proyek, definisi dari seluruh
+    /// proyek yang dirujuk file ini. Seperempat `max_tokens` (paling banyak
+    /// `tokens.repo_map_budget`) dicadangkan untuknya bila isi file tidak
+    /// muat seluruhnya.
     #[serde(default)]
     pub with_deps: bool,
     /// Default `tokens.default_read_budget`. Isi dipotong per baris.
