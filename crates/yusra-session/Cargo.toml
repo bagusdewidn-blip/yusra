@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 yusra-core.workspace = true
+yusra-index.workspace = true
 
 [lints]
 workspace = true

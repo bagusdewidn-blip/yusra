@@ -186,6 +186,28 @@ fn tool_error(tool: &str, e: &YusraError) -> CallToolResult {
             json!({ "path": path })
         }
         YusraError::NotFound { kind, id } => json!({ "kind": kind, "id": id }),
+        YusraError::StaleBase {
+            path,
+            symbol_path,
+            expected,
+            actual,
+        } => json!({
+            "path": path,
+            "symbol_path": symbol_path,
+            "expected": expected.to_hex(),
+            "actual": actual.map(|h| h.to_hex()),
+        }),
+        YusraError::Locked {
+            path,
+            symbol_path,
+            expires_at,
+        } => json!({ "path": path, "symbol_path": symbol_path, "expires_at": expires_at }),
+        YusraError::ParseError { path } | YusraError::PatchRejected { path, .. } => {
+            json!({ "path": path })
+        }
+        YusraError::SessionClosed { session, status } => {
+            json!({ "session_id": session, "status": status.as_str() })
+        }
         YusraError::Internal { .. } => {
             let trace_id = trace_id();
             tracing::error!(tool, %trace_id, error = %e, source = ?std::error::Error::source(e), "tool gagal");

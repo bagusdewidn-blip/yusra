@@ -58,6 +58,32 @@ string_id!(
     normalize_ulid
 );
 
+macro_rules! ulid_from_parts {
+    ($name:ident) => {
+        impl $name {
+            /// ULID dari waktu (milidetik Unix, 48 bit bawah) dan 80 bit acak
+            /// (bit di atasnya dibuang). Keacakan disediakan pemanggil.
+            pub fn from_parts(unix_ms: u64, random: u128) -> Self {
+                Self(encode_ulid(unix_ms, random))
+            }
+        }
+    };
+}
+
+ulid_from_parts!(SessionId);
+ulid_from_parts!(SnapshotId);
+
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+fn encode_ulid(unix_ms: u64, random: u128) -> String {
+    let time = u128::from(unix_ms & ((1 << 48) - 1));
+    let value = (time << 80) | (random & ((1 << 80) - 1));
+    (0..26)
+        .rev()
+        .map(|i| char::from(CROCKFORD[((value >> (i * 5)) & 0x1f) as usize]))
+        .collect()
+}
+
 fn normalize_git_oid(raw: &str) -> Option<String> {
     let ok = matches!(raw.len(), 40 | 64) && raw.bytes().all(|b| b.is_ascii_hexdigit());
     ok.then(|| raw.to_ascii_lowercase())
@@ -123,6 +149,20 @@ mod tests {
         assert_eq!(
             SnapshotId::parse(&lower).map(|s| s.to_string()),
             Ok(ULID.to_owned())
+        );
+    }
+
+    #[test]
+    fn ulid_from_parts_is_canonical_and_sortable() {
+        let a = SessionId::from_parts(1_700_000_000_000, 0);
+        let b = SessionId::from_parts(1_700_000_000_001, u128::MAX);
+        assert_eq!(SessionId::parse(a.as_str()), Ok(a.clone()));
+        assert_eq!(SessionId::parse(b.as_str()), Ok(b.clone()));
+        assert!(a < b, "urutan teks mengikuti waktu");
+        assert_eq!(SnapshotId::from_parts(0, 0).as_str(), "0".repeat(26));
+        assert_eq!(
+            SnapshotId::from_parts(u64::MAX, u128::MAX).as_str(),
+            format!("7{}", "Z".repeat(25))
         );
     }
 

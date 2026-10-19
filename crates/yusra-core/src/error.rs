@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::{hash::Hash32, session::SessionStatus};
+
 /// Kode error yang dikirim ke agen. Bagian dari API publik: nama tidak boleh berubah.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
@@ -119,6 +121,34 @@ pub enum YusraError {
         kind: &'static str,
         id: String,
     },
+    /// Isi yang menjadi dasar edit sudah berubah sejak dibaca agen. `actual`
+    /// `None` berarti file kini tidak ada.
+    StaleBase {
+        path: String,
+        symbol_path: Option<String>,
+        expected: Hash32,
+        actual: Option<Hash32>,
+    },
+    /// Simbol atau file dikunci session lain sampai `expires_at` (milidetik
+    /// Unix), atau `None`: session ini belum memegang lock yang dibutuhkan.
+    Locked {
+        path: String,
+        symbol_path: String,
+        expires_at: Option<i64>,
+    },
+    /// Hasil edit memuat galat sintaks yang tidak ada sebelumnya.
+    ParseError {
+        path: String,
+    },
+    /// Edit tidak bisa diterapkan; `reason` ditujukan ke agen.
+    PatchRejected {
+        path: String,
+        reason: String,
+    },
+    SessionClosed {
+        session: String,
+        status: SessionStatus,
+    },
     /// Bug atau kegagalan I/O. Detail hanya untuk log; agen menerima `trace_id`.
     Internal {
         message: String,
@@ -149,6 +179,11 @@ impl YusraError {
             Self::InvalidPath { .. } => ErrorCode::InvalidPath,
             Self::PathDenied { .. } => ErrorCode::PathDenied,
             Self::NotFound { .. } => ErrorCode::NotFound,
+            Self::StaleBase { .. } => ErrorCode::StaleBase,
+            Self::Locked { .. } => ErrorCode::Locked,
+            Self::ParseError { .. } => ErrorCode::ParseError,
+            Self::PatchRejected { .. } => ErrorCode::PatchRejected,
+            Self::SessionClosed { .. } => ErrorCode::SessionClosed,
             Self::Internal { .. } => ErrorCode::Internal,
         }
     }
@@ -162,6 +197,30 @@ impl fmt::Display for YusraError {
             }
             Self::PathDenied { path } => write!(f, "akses ke path ditolak: {path:?}"),
             Self::NotFound { kind, id } => write!(f, "{kind} tidak ditemukan: {id:?}"),
+            Self::StaleBase {
+                path, symbol_path, ..
+            } => match symbol_path {
+                Some(s) => write!(f, "{path}::{s} sudah berubah sejak dibaca; baca ulang"),
+                None => write!(f, "{path} sudah berubah sejak dibaca; baca ulang"),
+            },
+            Self::Locked {
+                path,
+                symbol_path,
+                expires_at: Some(_),
+            } => write!(f, "{path} ({symbol_path}) sedang dikunci session lain"),
+            Self::Locked {
+                path,
+                symbol_path,
+                expires_at: None,
+            } => write!(f, "ambil lock {path} ({symbol_path}) sebelum mengedit"),
+            Self::ParseError { path } => write!(f, "hasil edit {path} memuat galat sintaks"),
+            Self::PatchRejected { path, reason } => write!(f, "edit {path} ditolak: {reason}"),
+            Self::SessionClosed { session, status } => {
+                write!(
+                    f,
+                    "session {session} sudah tidak bisa diubah (status {status})"
+                )
+            }
             Self::Internal { message, .. } => write!(f, "kesalahan internal: {message}"),
         }
     }
@@ -195,6 +254,17 @@ mod tests {
             path: ".env".to_owned(),
         };
         assert_eq!(denied.code().as_str(), "path_denied");
+        let locked = YusraError::Locked {
+            path: "src/lib.rs".to_owned(),
+            symbol_path: "*".to_owned(),
+            expires_at: None,
+        };
+        assert_eq!(locked.code().as_str(), "locked");
+        let closed = YusraError::SessionClosed {
+            session: "x".to_owned(),
+            status: SessionStatus::Merged,
+        };
+        assert_eq!(closed.code().as_str(), "session_closed");
         assert_eq!(YusraError::internal("x").code().as_str(), "internal");
     }
 
